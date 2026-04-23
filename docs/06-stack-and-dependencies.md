@@ -2,77 +2,31 @@
 
 ---
 
-## Gestor de paquetes — uv (no pip)
+## Gestor de paquetes — uv
 
-`uv` es el gestor oficial del proyecto. Reemplaza `pip`, `venv` y `pip-tools` en un solo comando.
-**No usar `pip` para instalar dependencias del proyecto** — solo para instalaciones puntuales fuera del entorno.
+`uv` reemplaza `pip`, `venv` y `pip-tools` en un solo comando. Es el único gestor autorizado
+en este proyecto — no usar `pip` para instalar dependencias.
 
 | Acción | Comando |
 |--------|---------|
 | Instalar todas las dependencias | `uv sync` |
-| Agregar una dependencia nueva | `uv add nombre-paquete` |
+| Agregar una dependencia | `uv add nombre-paquete` |
 | Agregar dependencia de dev | `uv add --dev nombre-paquete` |
 | Crear entorno virtual | automático al correr `uv sync` |
 
 ---
 
-## Capa de datos (Excel / CSV)
-
-El proyecto gira alrededor de Excel. Sin esto no arranca:
-
-| Librería | Para qué | Por qué |
-|----------|----------|---------|
-| `openpyxl` | Leer y escribir `.xlsx` | Agno's `CsvTools` no maneja Excel nativo — necesitás esto para que `IngestAgent` y `AuditWriter` abran/guarden el archivo real |
-| `pandas` | Transformar DataFrames | Agno lo usa internamente en `PandasTools` y `CsvTools`; extraer columnas, deduplicar categorías, generar el reporte de cambios |
-| `rapidfuzz` | Fuzzy matching de texto | Pre-filtro barato: con 1 línea filtrás typos obvios (score ≥ 0.95) antes de gastar tokens de LLM. Reduce costos significativamente en datasets grandes |
-| `duckdb` | SQL sobre CSV | Para el `ValidatorAgent` sobre la tabla de categorías válidas |
-
----
-
-## Capa de validación y schemas
-
-`pydantic` — ya está en el plan con `output_schema`. Asegurarse de usar **Pydantic v2** (Agno requiere v2).
-
----
-
-## Capa de persistencia
-
-| Librería | Para qué |
-|----------|----------|
-| `sqlalchemy` | Agno's `PostgresDb` lo requiere como dependencia |
-| `psycopg[binary]` | Driver PostgreSQL para producción |
-| `aiosqlite` | SQLite async para dev local (Agno lo usa internamente) |
-
-`SqliteDb` para dev y `PostgresDb` para prod — como está en `infrastructure/storage/sqlite.py`.
-
----
-
-## Capa de UI — Chainlit
-
-Chainlit es la interfaz visual del proyecto. Fue elegida sobre Streamlit y Gradio porque:
-- Visualiza los pasos del agente automáticamente (IngestAgent → ValidatorAgent → MapperAgent → AuditWriter)
-- Muestra cada tool call en tiempo real — el recruiter ve el razonamiento del agente
-- Tiene autenticación y historial de sesiones integrados (señal de producción real)
-- Es el framework de más crecimiento en AI Engineer job postings 2026
-
-```
-pip install chainlit   →   NO usar
-uv add chainlit        →   correcto
-```
-
----
-
 ## Capa de datos de referencia — O*NET
 
-La lista `valid_categories` viene del archivo oficial del Departamento de Trabajo de EE.UU.:
+La fuente de verdad de categorías válidas es el archivo oficial del Departamento de Trabajo de EE.UU.:
 
 | Archivo | Ubicación | Contenido |
 |---------|-----------|-----------|
-| `Related Occupations.xlsx` | raíz del proyecto | 923 ocupaciones canónicas + relaciones entre ellas |
-| `data/valid_categories.csv` | generado por script | 923 títulos únicos extraídos de la columna `Title` |
+| `related_ocuppations.xlsx` | `data/raw/` | 923 ocupaciones canónicas + relaciones entre ellas |
+| `valid_categories.csv` | `data/` | 923 títulos únicos, generado por `scripts/` |
 
-El archivo tiene 18.460 filas porque cada ocupación aparece múltiples veces
-(una por cada ocupación relacionada). Al extraer valores únicos de `Title` → 923.
+El archivo tiene 18.460 filas porque cada ocupación aparece una vez por cada ocupación relacionada.
+Al extraer valores únicos de la columna `Title` se obtienen exactamente 923.
 
 Script que genera el CSV:
 
@@ -80,7 +34,7 @@ Script que genera el CSV:
 # scripts/build_valid_categories.py
 import openpyxl, csv
 
-wb = openpyxl.load_workbook("Related Occupations.xlsx")
+wb = openpyxl.load_workbook("data/raw/related_ocuppations.xlsx")
 ws = wb.active
 titles = set()
 for i, row in enumerate(ws.iter_rows(values_only=True)):
@@ -95,24 +49,108 @@ with open("data/valid_categories.csv", "w", newline="", encoding="utf-8") as f:
 
 ---
 
+## Capa de datos (Excel / CSV)
+
+| Librería | Para qué | Por qué |
+|----------|----------|---------|
+| `openpyxl` | Leer y escribir `.xlsx` | Crítico: sin esto `IngestAgent` y `AuditWriter` no pueden abrir ni guardar el Excel del usuario |
+| `pandas` | Transformar DataFrames | Extrae columnas, deduplica categorías, genera el reporte de cambios |
+| `rapidfuzz` | Fuzzy matching de texto | Pre-filtro barato: score ≥ 0.90 → corrección automática sin gastar tokens de LLM |
+| `duckdb` | SQL sobre CSV | `ValidatorAgent` consulta la tabla de categorías válidas con SQL estándar |
+
+`rapidfuzz` corre **antes** de cada llamada al LLM — es un pre-filtro obligatorio, no opcional.
+Score ≥ 0.90 → corrección automática. Score 0.70–0.89 → pasa al LLM. Score < 0.70 → human-in-the-loop.
+
+---
+
+## Capa de validación y schemas
+
+`pydantic>=2.0` — Agno requiere v2; no degradar a v1.
+
+Toda la salida de los agentes pasa por `output_schema` con modelos Pydantic.
+Ningún agente devuelve texto libre — esto es un invariante del sistema.
+
+---
+
+## Capa de persistencia
+
+| Librería | Para qué |
+|----------|----------|
+| `sqlalchemy` | Requerido por `PostgresDb` de Agno como dependencia interna |
+| `psycopg[binary]` | Driver PostgreSQL para producción |
+| `aiosqlite` | SQLite async para dev local (Agno lo usa internamente) |
+
+`SqliteDb` en dev, `PostgresDb` en prod — configurado en `infrastructure/storage/sqlite.py`.
+
+---
+
+## Capa de UI — Chainlit
+
+Chainlit es la interfaz visual del proyecto. Fue elegida sobre Streamlit y Gradio porque:
+
+- Visualiza cada paso del agente en tiempo real (IngestAgent → ValidatorAgent → MapperAgent → AuditWriter).
+- Muestra cada tool call mientras ocurre — el usuario ve el razonamiento del agente.
+- Tiene autenticación e historial de sesiones integrados, señal de producción real.
+
+```
+pip install chainlit   →   NO usar
+uv add chainlit        →   correcto
+```
+
+---
+
 ## Capa de API y runtime
 
 | Librería | Para qué |
 |----------|----------|
-| `uvicorn` | ASGI server para FastAPI / AgentOS — `uvicorn main:app --reload` |
-| `python-dotenv` | Cargar `.env` en dev — `load_dotenv()` al inicio de `main.py` |
+| `fastapi` | Requerido por `AgentOS` internamente — no se instancia manualmente |
+| `uvicorn` | ASGI server — `uvicorn main:app --reload --port 7777` |
+| `python-dotenv` | Carga `.env` en dev — `load_dotenv()` al inicio de `main.py` |
+| `openai` | Requerido por Agno's `OpenAILike` y `LMStudio` para conectar con endpoints OpenAI-compatibles |
+
+**Patrón de wiring correcto** — `AgentOS` genera la FastAPI app; no crear un `FastAPI()` manualmente:
+
+```python
+# main.py
+from agno.os import AgentOS
+from agno.db.sqlite import SqliteDb
+from agents.workflow import onet_workflow
+
+agent_os = AgentOS(
+    id="onet-normalizer",
+    workflows=[onet_workflow],
+    db=SqliteDb(db_file="tmp/app.db"),
+)
+
+app = agent_os.get_app()  # ← esta es la FastAPI app que sirve uvicorn
+
+if __name__ == "__main__":
+    agent_os.serve(app="main:app", reload=True)
+```
+
+`openai` se necesita aunque el proveedor sea LMStudio — Agno usa el SDK de OpenAI
+para comunicarse con cualquier API compatible con el protocolo OpenAI.
+
+---
+
+## Observabilidad — Agno built-in traces
+
+El proyecto usa **Agno traces** exclusivamente. Zero-config, muestra el dashboard
+en `os.agno.com`, y es coherente con el resto del stack.
+
+No usar LangSmith — genera dependencia en un stack externo innecesario.
 
 ---
 
 ## Testing
 
-La evaluation layer es lo que diferencia el portfolio (ver `03-market-research.md`).
+La evaluation layer es lo que diferencia este portfolio de un proyecto sin métricas.
 
 | Librería | Para qué |
 |----------|----------|
 | `pytest` | Framework de tests — `evaluation/test_agent_accuracy.py` |
 | `pytest-asyncio` | Tests async (Agno usa async internamente) |
-| `httpx` | Testear los endpoints de FastAPI sin levantar el server |
+| `httpx` | Testear endpoints de FastAPI sin levantar el server |
 
 ```python
 # evaluation/test_agent_accuracy.py
@@ -133,7 +171,7 @@ async def test_normalization_endpoint():
 | Herramienta | Para qué | Comando |
 |-------------|----------|---------|
 | `uv` | Package manager | `uv sync` |
-| `ruff` | Linter + formatter en uno (reemplaza flake8 + black + isort) | `ruff check . && ruff format .` |
+| `ruff` | Linter + formatter (reemplaza flake8 + black + isort) | `ruff check . && ruff format .` |
 
 ```toml
 # pyproject.toml
@@ -144,47 +182,24 @@ target-version = "py312"
 
 ---
 
-## Observabilidad — elegir uno
-
-| Opción | Cuándo elegirla |
-|--------|----------------|
-| **Agno built-in traces** | Zero-config, muestra el dashboard de `os.agno.com` en el portfolio — más integrado con el stack |
-| **LangSmith** | Si se aplica a empresas que usan LangChain/LangSmith — más reconocible en CVs enterprise |
-
-Para portfolio: **Agno traces** es más coherente con el stack actual.
-
----
-
-## Proyecto 1 — Mastra / TypeScript (stack separado)
-
-| Herramienta | Para qué |
-|-------------|----------|
-| **TypeScript** + **Node.js 22** | Lenguaje del proyecto 1 |
-| **Mastra** | Framework agent TypeScript |
-| **Zod** | Equivalente a Pydantic — output schema validation en TS |
-| **Vitest** | Testing en TypeScript (más rápido que Jest) |
-| **tsx** | Ejecutar TypeScript directo sin compilar en dev |
-
----
-
 ## pyproject.toml completo
 
 ```toml
 [project]
-name = "py-agno-ai-agents"
+name = "py-agno-ai-workflow"
 version = "0.1.0"
 requires-python = ">=3.12"
 
 dependencies = [
     "agno>=1.0",
-    "openai",               # requerido para LMStudio (usa API compatible OpenAI) y Groq en prod
+    "openai",               # requerido para LMStudio (OpenAI-compatible) y Groq en prod
     "pydantic>=2.0",
     "fastapi",
     "uvicorn",
     "chainlit",             # UI del agente — visualiza pasos en tiempo real
     "pandas",
     "openpyxl",             # leer/escribir Excel (.xlsx)
-    "rapidfuzz",            # pre-filtro typos antes del LLM (ver nota)
+    "rapidfuzz",            # pre-filtro typos antes del LLM
     "duckdb",               # SQL sobre CSV de categorías válidas
     "sqlalchemy",           # requerido por PostgresDb de Agno
     "psycopg[binary]",      # driver PostgreSQL para producción
@@ -212,10 +227,10 @@ asyncio_mode = "auto"
 
 ## Decisiones clave
 
-- `openpyxl` es **crítico** — sin esto no se puede abrir ni guardar el Excel del usuario
-- `rapidfuzz` actúa como **pre-filtro antes del LLM**: score ≥ 0.90 → corrección automática sin gastar tokens; score 0.70–0.89 → pasa al LLM; score < 0.70 → human-in-the-loop. El doc `04` tenía una contradicción que decía "no necesitamos rapidfuzz" — eso fue corregido: sí se usa.
-- `chainlit` es la UI elegida sobre Streamlit/Gradio — visualiza pasos del agente en tiempo real, señal de producción real en portfolios 2026
-- `openai` se requiere aunque el proveedor sea LMStudio — Agno usa `OpenAILike` que depende del SDK de OpenAI para la comunicación con la API local de LMStudio
-- La fuente de `valid_categories` es **O*NET** (`Related Occupations.xlsx`, 923 ocupaciones canónicas) — no se construye manualmente
-- `pytest + httpx` habilitan la **evaluation layer** que diferencia el portfolio según el market research
-- No usar LangSmith y Agno traces simultáneamente — elegir uno y mostrarlo bien
+- `openpyxl` es **crítico** — sin esto no se puede abrir ni guardar el Excel del usuario.
+- `rapidfuzz` actúa como **pre-filtro obligatorio antes del LLM**: score ≥ 0.90 → corrección automática; score 0.70–0.89 → pasa al LLM; score < 0.70 → human-in-the-loop.
+- `chainlit` fue elegida sobre Streamlit/Gradio porque visualiza los pasos del agente en tiempo real.
+- `openai` se requiere aunque el proveedor sea LMStudio — Agno's `OpenAILike` depende del SDK.
+- La fuente de `valid_categories` es **O*NET** (923 ocupaciones canónicas) — no se construye manualmente.
+- `pytest + httpx` habilitan la evaluation layer que diferencia el portfolio.
+- Observabilidad: **Agno traces** únicamente — coherente con el stack, visible en `os.agno.com`.

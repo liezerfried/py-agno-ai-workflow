@@ -70,49 +70,109 @@ team = Team(
 
 ### Workflows
 
-**`agno.workflow.workflow.Workflow`** — Define flujos de trabajo determinísticos multi-paso. A diferencia de los Teams (dinámicos), los Workflows tienen pasos fijos y predecibles, ideales para pipelines de producción.
+El sistema de Workflows tiene **tres capas**: `Step` → `Steps` → `Workflow`.
 
-- `steps` — lista de `Step` que definen la secuencia
+**`agno.workflow.step.Step`** — Unidad mínima. Envuelve un Agent (o Team, o función custom) con nombre y descripción.
+
+- `name` — identificador del paso
+- `agent` — el agente que ejecuta este paso (también acepta `team` o `function`)
+- `description` — descripción del paso (opcional, mejora trazas)
+
+**`agno.workflow.steps.Steps`** — Agrupa una secuencia ordenada de `Step`s en una unidad nombrada. Permite componer sub-pipelines reutilizables. Los Steps se ejecutan en orden.
+
+- `name` — nombre de la secuencia
+- `steps` — lista de `Step` a ejecutar en orden
+- `description` — descripción del grupo
+
+**`agno.workflow.workflow.Workflow`** — Orquesta una o más secuencias de `Steps`. Persiste el estado entre ejecuciones.
+
+- `steps` — lista de `Steps` (no de `Step` individuales — se agrupan antes)
 - `db` — base de datos para persistir el estado del workflow
-
-**`agno.workflow.step.Step`** — Un paso dentro de un Workflow. Puede ejecutar un agente, un team, o una función custom.
+- `name`, `description` — metadatos del workflow
 
 ```python
-from agno.workflow.workflow import Workflow
 from agno.workflow.step import Step
+from agno.workflow.steps import Steps
+from agno.workflow.workflow import Workflow
+from agno.db.sqlite import SqliteDb
 
+# Paso 1: definir steps individuales
+ingest_step   = Step(name="ingest",    agent=ingest_agent,    description="Extraer categorías únicas del Excel")
+validate_step = Step(name="validate",  agent=validator_agent, description="Comparar contra O*NET válidos")
+map_step      = Step(name="map",       agent=mapper_agent,    description="Proponer correcciones con rapidfuzz + LLM")
+audit_step    = Step(name="audit",     agent=audit_writer,    description="Escribir Excel corregido + audit log")
+
+# Paso 2: agrupar en una secuencia
+pipeline = Steps(
+    name="normalization_pipeline",
+    description="Pipeline completo de normalización de categorías O*NET",
+    steps=[ingest_step, validate_step, map_step, audit_step],
+)
+
+# Paso 3: crear el Workflow
 workflow = Workflow(
-    name="QA Pipeline",
-    steps=[
-        Step(name="Buscar info", agent=researcher),
-        Step(name="Redactar respuesta", agent=writer),
-    ],
+    name="ONet Normalization Workflow",
+    steps=[pipeline],
+    db=SqliteDb(session_table="workflow_session", db_file="tmp/workflow.db"),
 )
 ```
+
+**Ejecución directa (dev/testing):**
+```python
+workflow.print_response("Procesar archivo upload.xlsx", stream=True)
+```
+
+**Ejecución via AgentOS (producción)** — ver sección AgentOS más abajo.
 
 ---
 
 ### AgentOS
 
-**`agno.os.AgentOS`** — Runtime y plano de control para desplegar y gestionar agentes, teams y workflows en producción. Construido sobre FastAPI, expone una API REST completa.
+**`agno.os.AgentOS`** — Runtime y plano de control para desplegar y gestionar agentes, teams y workflows en producción. **Es el reemplazo de FastAPI puro** — en lugar de crear una app FastAPI manualmente, `AgentOS` la genera y expone una REST API completa con endpoints para agentes, workflows, sesiones, trazas, memoria, knowledge, evals y schedules.
 
+Parámetros clave:
 - `agents` — lista de agentes disponibles
 - `teams` — lista de teams
 - `workflows` — lista de workflows
 - `knowledge` — lista de knowledge bases
 - `db` — base de datos principal
+- `id`, `name`, `description` — metadatos del OS
 
+**Patrón estándar de wiring (producción):**
 ```python
 from agno.os import AgentOS
 
 agent_os = AgentOS(
-    id="my-app",
-    agents=[assistant],
-    teams=[research_team],
-    workflows=[qa_workflow],
+    id="onet-normalizer",
+    description="Pipeline de normalización de categorías O*NET",
+    workflows=[onet_workflow],
+    db=SqliteDb(db_file="tmp/app.db"),
 )
-app = agent_os.get_app()  # FastAPI app lista para uvicorn
+
+# get_app() devuelve la FastAPI app lista para uvicorn
+app = agent_os.get_app()
+
+if __name__ == "__main__":
+    agent_os.serve(app="main:app", reload=True)
 ```
+
+```bash
+# Arrancar el servidor
+uvicorn main:app --reload --port 7777
+```
+
+**NO hacer esto** (FastAPI manual sin AgentOS):
+```python
+# ❌ Patrón viejo — no usar
+from fastapi import FastAPI
+app = FastAPI()
+
+@app.post("/run")
+def run_workflow(...):
+    ...
+```
+
+AgentOS ya expone `/workflows/{id}/runs` y `/workflows/{id}/runs/stream` automáticamente. No reimplementar lo que AgentOS da gratis.
 
 ---
 
@@ -259,16 +319,37 @@ Se configuran declarativamente en el Agent y se ejecutan automáticamente en cad
 | `agno.models.anthropic` | Anthropic (Claude 3.5, Claude 4, etc.) |
 | `agno.models.google` | Google (Gemini) |
 | `agno.models.groq` | Groq |
+| `agno.models.lmstudio` | LM Studio (local) — clase dedicada |
+| `agno.models.openai.like` | Cualquier endpoint OpenAI-compatible |
 | `agno.models.ollama` | Modelos locales via Ollama |
 | `agno.models.aws` | AWS Bedrock |
 | `agno.models.azure` | Azure OpenAI |
 
 Todos exponen la misma interfaz, lo que hace trivial cambiar de proveedor.
 
+**Este proyecto — providers usados:**
+
 ```python
-from agno.models.anthropic import Claude
-model = Claude(id="claude-sonnet-4-20250514")
+# Dev: LM Studio local (dos opciones equivalentes)
+from agno.models.lmstudio import LMStudio          # clase dedicada (preferida)
+from agno.models.openai.like import OpenAILike      # alternativa genérica, también válida
+
+model_dev = LMStudio(id="qwen2.5-7b-instruct")
+# base_url default: http://localhost:1234/v1 — no hace falta configurar si LM Studio corre local
+
+# Alternativa con OpenAILike (útil si se necesita base_url custom)
+model_dev = OpenAILike(
+    id="qwen2.5-7b-instruct",
+    base_url="http://localhost:1234/v1",
+    api_key="not-provided",  # LM Studio no requiere key real
+)
+
+# Prod: Groq
+from agno.models.groq import Groq
+model_prod = Groq(id="llama-3.3-70b-versatile")
 ```
+
+La selección dev/prod se centraliza en `infrastructure/llm/provider.py` — ningún agente instancia modelos directamente.
 
 ---
 

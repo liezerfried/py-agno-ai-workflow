@@ -2,7 +2,7 @@ import csv
 import openpyxl
 from pathlib import Path
 
-SOURCE = Path("data/raw/related_occupations.xlsx")
+SOURCE = Path("data/raw/related_ocuppations.xlsx")
 OUTPUT = Path("data/valid_categories.csv")
 
 

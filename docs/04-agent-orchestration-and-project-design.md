@@ -5,12 +5,12 @@
 ## 1. Qué es la orquestación de agentes
 
 Orquestación es el mecanismo que define **cómo y en qué orden trabajan los agentes**.
-Un agente solo no alcanza para tareas complejas — necesitás coordinar varios, decidir
-quién hace qué, cuándo habla cada uno, y cómo se pasa información de uno al siguiente.
+Un agente solo no alcanza para tareas complejas: necesitás coordinar varios, definir
+quién hace qué, y cómo fluye la información entre ellos.
 
 ### LangChain / LangGraph vs Agno
 
-Probablemente escuchaste mencionar LangChain, LangSmith y LangGraph. Son tres cosas
+Probablemente escuchaste mencionar LangChain, LangSmith y LangGraph. Son tres herramientas
 distintas del mismo ecosistema:
 
 | Herramienta | Qué es |
@@ -19,11 +19,11 @@ distintas del mismo ecosistema:
 | **LangSmith** | Plataforma de observabilidad — ver trazas, evaluar, debuggear |
 | **LangGraph** | Orquestador de agentes usando el concepto de **grafo** (nodos + aristas) |
 
-LangGraph piensa la orquestación como un diagrama de flujo: cada agente es un nodo,
-y las conexiones entre ellos son aristas con condiciones. Es poderoso pero conceptualmente
-más pesado — hay que pensar en grafos dirigidos, estados del grafo, ciclos, etc.
+LangGraph modela la orquestación como un diagrama de flujo: cada agente es un nodo y las
+conexiones son aristas con condiciones. Es poderoso, pero requiere pensar en grafos
+dirigidos, estados y ciclos.
 
-**Agno toma otro camino.** En vez de grafos, usa abstracciones más directas:
+**Agno toma otro camino.** En vez de grafos, expone abstracciones más directas y predecibles:
 
 | Agno | Equivalente conceptual |
 |------|----------------------|
@@ -31,8 +31,8 @@ más pesado — hay que pensar en grafos dirigidos, estados del grafo, ciclos, e
 | `Team` | Colaboración dinámica entre agentes especializados |
 | `Agent` individual | Nodo simple con tools propias |
 
-No es mejor ni peor que LangGraph — es más Pythónico, más directo, y para proyectos
-de portfolio con flujos claros y predecibles, es la elección correcta.
+No es mejor ni peor que LangGraph — es más Pythónico y más directo. Para flujos claros y
+predecibles, como este proyecto, es la elección correcta.
 
 ---
 
@@ -78,19 +78,17 @@ Output: Excel limpio + audit trail de cada corrección
 - **Tipo de problema:** calidad de datos empresarial (data quality / ETL con LLM)
 - **Lo que muestra al recruiter:** datos reales, confianza escalonada, evaluation layer, deploy
 
-**La diferencia clave entre ambos:** el proyecto 1 trabaja con texto libre (investigación).
-El proyecto 2 trabaja con datos estructurados reales (Excel) que tienen un formato esperado
-y un resultado verificable — podés medir objetivamente si el agente se equivocó o no.
-Eso lo hace más enterprise y más evaluable.
+**La diferencia clave:** el proyecto 1 trabaja con texto libre. El proyecto 2 trabaja con datos
+estructurados que tienen un formato esperado y un resultado verificable — podés medir
+objetivamente si el agente se equivocó. Eso lo hace más enterprise y más evaluable.
 
 ---
 
 ## 3. Qué hace exactamente el proyecto actual
 
-El problema que resuelve: **las empresas tienen sistemas que esperan datos en un formato
-específico** (categorías con nombres exactos). Cuando un usuario carga un Excel con
-errores de tipeo o categorías en otro idioma, el sistema rechaza el archivo o lo procesa
-mal.
+**El problema:** los sistemas esperan categorías con nombres exactos. Cuando un usuario carga
+un Excel con errores de tipeo o categorías en otro idioma, el sistema rechaza el archivo
+o lo procesa mal.
 
 **Ejemplos concretos del problema:**
 
@@ -101,16 +99,16 @@ mal.
 | `Ropa de Invierno` | `winter_clothing` | formato distinto |
 | `celulares` | `mobile_phones` | sinónimo |
 
-El agente recibe el Excel, detecta estos casos, propone la corrección y genera un
-archivo limpio. Para cada corrección registra: qué cambió, cuánta confianza tuvo,
-y qué método usó (matching automático, LLM, o intervención humana).
+El agente recibe el Excel, detecta estos casos, propone la corrección y genera un archivo
+limpio. Para cada corrección registra: qué cambió, cuánta confianza tuvo, y qué método usó
+(matching automático, LLM, o intervención humana).
 
 **El sistema de confianza escalonada:**
 
 ```
 rapidfuzz compara texto plano:
     score ≥ 0.90  → corrección automática sin preguntar
-    score 0.70–0.89 → corrección marcada como "revisar"
+    score 0.70–0.89 → LLM evalúa equivalencia semántica
 
 LLM evalúa semántica (sinónimos, idiomas, variantes):
     modelo decide si hay equivalencia semántica
@@ -118,16 +116,18 @@ LLM evalúa semántica (sinónimos, idiomas, variantes):
     score < 0.70 → human-in-the-loop: pausa y espera confirmación
 ```
 
-El `rapidfuzz` maneja typos baratos y rápido (sin consumir tokens del LLM).
-El LLM entra solo cuando hay ambigüedad semántica — esto reduce costos y latencia.
+`rapidfuzz` maneja typos de forma instantánea y sin consumir tokens. El LLM entra solo
+cuando hay ambigüedad semántica — sinónimos, cambios de idioma, abreviaturas. Esto reduce
+costos y latencia en datasets grandes.
 
 ---
 
 ## 4. Módulos de Agno: qué hace cada uno
 
 ### Agent
-La unidad base. Un agente combina un modelo de lenguaje + tools + instrucciones.
-Razona en un loop: recibe input → decide qué tool llamar → ejecuta → vuelve a razonar.
+
+La unidad base. Combina modelo de lenguaje, tools e instrucciones. Razona en un loop:
+recibe input → decide qué tool llamar → ejecuta → vuelve a razonar.
 
 ```python
 from agno.agent import Agent
@@ -142,22 +142,24 @@ agent = Agent(
 ---
 
 ### Team
-Grupo de agentes especializados con un líder que delega. El líder decide en tiempo
-real qué agente es el más adecuado para cada tarea.
+
+Grupo de agentes especializados con un líder que delega en tiempo real. El líder decide
+qué agente es el más adecuado para cada tarea.
 
 Tres modos:
 - `route` — el líder enruta cada tarea al agente más adecuado
 - `broadcast` — todos los agentes reciben la tarea simultáneamente
 - `coordinate` — orquestación colaborativa general (default)
 
-**Para el proyecto actual no usamos Team** — el flujo es secuencial y predecible,
-no necesitamos decisión dinámica sobre quién hace qué.
+**Para este proyecto no usamos Team** — el flujo es secuencial y predecible. No necesitamos
+que nadie decida dinámicamente quién hace qué.
 
 ---
 
 ### Workflow + Step + Steps
-Orquesta agentes en pasos con orden definido. El output de cada `Step` es el
-input del siguiente. Genera audit trail automático de cada paso.
+
+Orquesta agentes en pasos con orden definido. El output de cada `Step` alimenta el input
+del siguiente. Genera audit trail automático por paso.
 
 ```python
 from agno.workflow.step import Step
@@ -183,9 +185,10 @@ workflow = Workflow(
 ---
 
 ### Tools / Toolkit
-Las capacidades concretas que puede ejecutar un agente. Agno incluye más de 100
-toolkits nativos — el primer paso siempre es verificar si lo que necesitás ya
-existe (ver lista completa en `01-agno-core-concepts.md`).
+
+Las capacidades concretas que puede ejecutar un agente. Agno incluye más de 100 toolkits
+nativos — verificá siempre si lo que necesitás ya existe antes de construir uno custom
+(ver lista completa en `01-agno-core-concepts.md`).
 
 Para este proyecto todos los toolkits son nativos:
 - `CsvTools` — leer y escribir archivos CSV (ingest y output)
@@ -195,26 +198,27 @@ Para este proyecto todos los toolkits son nativos:
 ---
 
 ### Memory
-Historial de conversación del agente. Con `add_history_to_context=True` el agente
-recuerda lo que dijo antes dentro de la misma sesión. Útil para chatbots y
-conversaciones multi-turno. Para el proyecto actual no es crítico (cada run
-procesa un Excel nuevo), pero es relevante para el proyecto 1.
+
+Historial de conversación dentro de una sesión. Con `add_history_to_context=True` el agente
+recuerda lo que dijo antes. Útil para chatbots multi-turno. Para este proyecto no es crítico
+— cada run procesa un Excel nuevo.
 
 ---
 
 ### Knowledge (RAG)
-Base de conocimiento vectorial. Cargás documentos (PDFs, URLs, texto) y el agente
-puede buscar en ellos semánticamente. Internamente usa embeddings + vector database
-(ChromaDB, LanceDB, etc.).
 
-Para el proyecto actual, la "base de categorías válidas" es una SQLite simple —
-no necesitamos RAG. RAG entra cuando el contenido es no estructurado y extenso.
+Base de conocimiento vectorial. Cargás documentos (PDFs, URLs, texto) y el agente busca en
+ellos semánticamente mediante embeddings + vector database (ChromaDB, LanceDB, etc.).
+
+Para este proyecto la base de categorías válidas es un CSV consultado con SQL — no necesitamos
+RAG. RAG aplica cuando el contenido es no estructurado y extenso.
 
 ---
 
 ### Storage / db
-Persistencia de sesiones y estado entre runs. Con `SqliteDb` o `PostgreSQL` el
-agente guarda historial de conversaciones, métricas, y resultados de evaluaciones.
+
+Persistencia de sesiones y estado entre runs. Con `SqliteDb` o `PostgreSQL` el agente guarda
+historial de conversaciones, métricas y resultados de evaluaciones.
 
 ```python
 from agno.db.sqlite import SqliteDb
@@ -225,8 +229,9 @@ agent = Agent(model=model, db=db)
 ---
 
 ### AgentOS
+
 Runtime de producción que convierte tus agentes en una API FastAPI + interfaz web.
-Es el equivalente a Mastra Studio pero de Agno.
+Es el equivalente a Mastra Studio en el ecosistema Agno.
 
 ```python
 from agno.os import AgentOS
@@ -242,14 +247,14 @@ if __name__ == "__main__":
     agent_os.serve(app="playground:app", reload=True, port=9001)
 ```
 
-Levantás esto con `python playground.py` y tenés una UI de chat en
-`http://localhost:9001`. Desde ahí podés hablar con el agente, ver las tool calls
-en tiempo real, y monitorear métricas.
+Levantás esto con `python playground.py` y obtenés una UI de chat en `http://localhost:9001`
+con tool calls en tiempo real y métricas de tokens.
 
 ---
 
 ### AGUI
-La interfaz web que usa AgentOS. Es el "estudio" visual que te permite:
+
+La interfaz web que expone AgentOS. Permite:
 - Chatear con el agente directamente
 - Ver qué tools llamó y con qué argumentos
 - Revisar si las respuestas son coherentes
@@ -258,9 +263,9 @@ La interfaz web que usa AgentOS. Es el "estudio" visual que te permite:
 ---
 
 ### Evaluaciones (AccuracyEval)
-Agno tiene un sistema de evaluación para medir objetivamente si el agente responde
-bien. Para el proyecto de normalización, vas a poder crear un dataset de prueba
-con 20-30 casos conocidos (input con error → output esperado) y medir precision/recall:
+
+Sistema de evaluación para medir objetivamente si el agente responde bien. Podés crear un
+dataset de 20–30 casos conocidos (input con error → output esperado) y medir precision/recall:
 
 ```python
 from agno.eval.accuracy import AccuracyEval
@@ -291,16 +296,16 @@ evaluation.run(print_results=True)
 | `MapperAgent` | Proponer correcciones (rapidfuzz + LLM + human-loop) |
 | `AuditWriter` | Generar el Excel corregido y el reporte de cambios |
 
-Tener 4 agentes con responsabilidades únicas tiene ventajas concretas:
-- Si `ValidatorAgent` falla, sabés exactamente dónde está el error
-- Podés reemplazar o mejorar un agente sin tocar los demás
-- Las métricas de cada paso son independientes
+Responsabilidades únicas tienen ventajas concretas: si `ValidatorAgent` falla, sabés
+exactamente dónde está el error. Podés reemplazar un agente sin tocar los demás, y las
+métricas de cada paso son independientes.
 
 ---
 
 ### ¿Workflow o Team?
 
-**Workflow.** Las razones:
+**Workflow.** El flujo siempre es: ingest → validate → map → audit. No hay decisión
+dinámica sobre qué agente llamar.
 
 | Criterio | Workflow | Team |
 |----------|----------|------|
@@ -308,9 +313,6 @@ Tener 4 agentes con responsabilidades únicas tiene ventajas concretas:
 | El output de A alimenta a B | Sí, siempre | No necesariamente |
 | Necesitamos audit trail por paso | Sí | No nativo |
 | El flujo puede cambiar en runtime | No | Sí |
-
-El flujo del proyecto es siempre: ingest → validate → map → audit. No hay decisión
-dinámica sobre qué agente llamar. Eso es un Workflow.
 
 ---
 
@@ -325,14 +327,11 @@ Todos los toolkits son nativos de Agno — no hay nada custom que construir:
 | `MapperAgent` | `output_schema` + Pydantic | nativo en `Agent` | El LLM matchea semánticamente y devuelve JSON validado |
 | `AuditWriter` | `CsvTools` (write) | `agno.tools.csv_toolkit` | Escribir el CSV corregido con los cambios |
 
-**Por qué sí usamos `rapidfuzz` como pre-filtro:** antes de gastar tokens del LLM,
-rapidfuzz compara caracteres y detecta typos obvios (score ≥ 0.90) de forma
-instantánea y sin costo. El LLM entra solo cuando rapidfuzz no alcanza —
-sinónimos, cambios de idioma, abreviaturas. Esto reduce costos y latencia
-significativamente en datasets grandes.
+**Por qué rapidfuzz como pre-filtro:** antes de gastar tokens del LLM, rapidfuzz compara
+caracteres y detecta typos obvios (score ≥ 0.90) de forma instantánea y sin costo.
 
-El flujo es: rapidfuzz primero → LLM solo si el score está entre 0.70 y 0.89 →
-human-in-the-loop si score < 0.70.
+El LLM entra solo cuando rapidfuzz no alcanza — sinónimos, cambios de idioma, abreviaturas.
+El flujo es: rapidfuzz → LLM si score 0.70–0.89 → human-in-the-loop si score < 0.70.
 
 ---
 
@@ -347,8 +346,8 @@ Agno tiene cuatro modos de testing, de más simple a más completo:
 agent.cli_app(stream=True)
 ```
 
-Levantás una conversación en la terminal. Útil para testear un agente específico
-rápido sin levantar nada extra.
+Levantás una conversación en la terminal. Útil para testear un agente específico rápido,
+sin levantar nada extra.
 
 ---
 
@@ -359,15 +358,14 @@ rápido sin levantar nada extra.
 agent_os.serve(app="playground:app", reload=True, port=9001)
 ```
 
-Ejecutás `python playground.py` y abrís `http://localhost:9001` en el browser.
-Desde ahí podés interactuar con el agente visualmente, ver tool calls, respuestas,
-y métricas de tokens en tiempo real.
+Ejecutás `python playground.py` y abrís `http://localhost:9001`. Podés interactuar con el
+agente visualmente y ver tool calls, respuestas y métricas de tokens en tiempo real.
 
 Para conectar el dashboard externo:
 1. Entrás a `os.agno.com`
 2. Agregás una instancia nueva → seleccionás "Local"
 3. Ponés la URL `http://localhost:9001`
-4. Desde ahí ves el estado de los agentes, sesiones activas, y logs
+4. Desde ahí ves estado de agentes, sesiones activas y logs
 
 ---
 
@@ -381,9 +379,8 @@ agent = Agent(
 )
 ```
 
-Con `debug_mode=True` el agente imprime en consola cada vez que llama una tool,
-con qué argumentos, y qué devolvió. Útil para detectar alucinaciones o tool calls
-incorrectos durante el desarrollo.
+Con `debug_mode=True` el agente imprime en consola cada tool call, sus argumentos y su
+resultado. Útil para detectar alucinaciones o tool calls incorrectos durante el desarrollo.
 
 ---
 
@@ -403,26 +400,23 @@ evaluation = AccuracyEval(
 evaluation.run(print_results=True)
 ```
 
-Esto corre el agente N veces sobre el mismo input y mide cuántas veces acertó.
-Los resultados quedan en la DB y se pueden consultar vía la API de AgentOS
-(`http://localhost:9001/eval-runs`).
+Corre el agente N veces sobre el mismo input y mide cuántas veces acertó. Los resultados
+quedan en la DB y se pueden consultar en `http://localhost:9001/eval-runs`.
 
 ---
 
 ## 7. Cómo detectar alucinaciones
 
-Una "alucinación" en este contexto es cuando el agente corrige una categoría
-por algo que no existe en la base de datos válida — inventó una respuesta.
+Una alucinación en este contexto es cuando el agente propone una corrección que no existe
+en la base de categorías válidas — inventó una respuesta.
 
 La defensa tiene tres capas:
 
-1. **Siempre validar el output del MapperAgent contra la DB** antes de escribir
-   el Excel corregido — el `AuditWriter` verifica que cada corrección propuesta
-   exista en la lista de categorías válidas.
+1. **Validar el output del MapperAgent contra la DB** antes de escribir el Excel — el
+   `AuditWriter` verifica que cada corrección propuesta exista en la lista de categorías válidas.
 
-2. **`output_schema` con Pydantic** — forzar al agente a devolver un JSON
-   estructurado y validado. Si el output no cumple el schema, Agno lo rechaza.
+2. **`output_schema` con Pydantic** — fuerza al agente a devolver JSON estructurado y
+   validado. Si el output no cumple el schema, Agno lo rechaza.
 
-3. **Evaluaciones con casos conocidos** — el dataset de prueba en `evaluation/`
-   tiene los outputs esperados. Si el agente empieza a inventar, los tests lo
-   detectan antes de que llegue a producción.
+3. **Evaluaciones con casos conocidos** — el dataset en `evaluation/` tiene los outputs
+   esperados. Si el agente empieza a inventar, los tests lo detectan antes de producción.

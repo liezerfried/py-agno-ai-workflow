@@ -120,7 +120,79 @@ ocupaciones — útil cuando hay ambigüedad:
 
 ---
 
-## 4. Cómo funciona la detección — dos capas en orden
+## 4. Las 7 normalizaciones del sistema
+
+El sistema resuelve 7 categorías de error humano. Cada una tiene una capa asignada
+que la resuelve — esto define cómo fluye el título dentro del MapperAgent.
+
+| # | Tipo | Input ejemplo | Output esperado | Resuelta por |
+|---|------|---------------|-----------------|--------------|
+| 1 | **Typo** | `"Fronted Developer"` | `"Software Developers"` | rapidfuzz |
+| 2 | **Casing / puntuación** | `"FULL-STACK DEVELOPER"` | `"Software Developers"` | pre_processor.py |
+| 3 | **Seniority stripping** | `"Senior Frontend Developer"` | `"Software Developers"` | pre_processor.py |
+| 4 | **Ruido / contexto** | `"Dev Frontend - Remoto (Contract)"` | `"Software Developers"` | pre_processor.py |
+| 5 | **Idioma** | `"Desarrollador Backend"` | `"Software Developers"` | LLM |
+| 6 | **Abreviatura / sinónimo** | `"RRHH"`, `"comercial"` | `"Human Resources Managers"` | LLM |
+| 7 | **Género gramatical** | `"Desarrolladora"`, `"Analista de Datos"` | `"Data Scientists..."` | LLM |
+
+**Regla clave:** los tipos 2, 3 y 4 se limpian con `pre_processor.py` antes de que el
+título llegue a rapidfuzz. Esto convierte `"SENIOR FULL-STACK DEVELOPER - REMOTO"` en
+`"full stack developer"` — un string que rapidfuzz puede comparar eficientemente sin
+gastar tokens de LLM.
+
+---
+
+## 4b. El pre-processor — Python puro, cero tokens
+
+`pre_processor.py` normaliza el título antes de la comparación. No usa LLM.
+Se llama dentro del MapperAgent como primer paso, antes de rapidfuzz.
+
+```python
+# agents/pre_processor.py
+import re
+import unicodedata
+
+SENIORITY_WORDS = {
+    "senior", "sr", "junior", "jr", "lead", "staff",
+    "principal", "mid", "entry", "associate", "head of",
+}
+
+def normalize_title(raw: str) -> str:
+    # 1. lowercase + strip accents
+    title = raw.lower().strip()
+    title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+
+    # 2. strip noise after separators (-, |, /, parentheses)
+    title = re.split(r"[-|/\(]", title)[0].strip()
+
+    # 3. strip seniority modifiers
+    words = [w for w in title.split() if w not in SENIORITY_WORDS]
+    title = " ".join(words)
+
+    # 4. normalize punctuation (hyphens → space)
+    title = re.sub(r"[-_]", " ", title)
+    title = re.sub(r"\s+", " ", title).strip()
+
+    return title
+```
+
+**Ejemplos:**
+
+| Input | Output de normalize_title() |
+|-------|-----------------------------|
+| `"SENIOR FULL-STACK DEVELOPER - REMOTO"` | `"full stack developer"` |
+| `"Jr. Data Engineer \| Remote"` | `"data engineer"` |
+| `"AWS Certified Developer (Contract)"` | `"aws certified developer"` |
+| `"Desarrolladora Frontend"` | `"desarrolladora frontend"` ← pasa al LLM |
+
+---
+
+## 5. Cómo funciona la detección — tres capas en orden
+
+### Capa 0 — pre_processor.py (normalización determinística, sin LLM)
+
+Limpia el título antes de cualquier comparación. Sin tokens, sin latencia adicional.
+Ver sección 4b para el código completo.
 
 ### Capa 1 — rapidfuzz (comparación de letras, sin LLM)
 
@@ -215,13 +287,17 @@ Cada error que ponés tiene un propósito: testear typos, sinónimos, cambios de
 
 ### Tipos de errores que el dataset debe cubrir
 
-| Tipo de error | Ejemplo input | Ejemplo output esperado |
-|--------------|---------------|------------------------|
-| Typo | `"Fronted Developer"` | `"Frontend Developer"` |
-| Abreviatura | `"Dev Front"`, `"FE Dev"` | `"Frontend Developer"` |
-| Idioma incorrecto | `"Desarrollador Frontend"` | `"Frontend Developer"` |
-| Sinónimo | `"RRHH"` | `"Human Resources Managers"` |
-| Formato distinto | `"data eng"` | `"Data Engineers"` |
+El golden dataset debe tener al menos 2 casos por tipo — uno fácil y uno límite.
+
+| Tipo | Ejemplo input | Output esperado | Resuelta por |
+|------|---------------|-----------------|--------------|
+| Typo | `"Fronted Developer"`, `"data enginer"` | `"Software Developers"` | rapidfuzz |
+| Casing / puntuación | `"FULL-STACK DEVELOPER"`, `"front-end dev"` | `"Software Developers"` | pre_processor |
+| Seniority stripping | `"Senior Data Engineer"`, `"Jr. Frontend Dev"` | `"Data Engineers"` | pre_processor |
+| Ruido / contexto | `"Backend Developer - Remoto"`, `"Dev (Contract)"` | `"Software Developers"` | pre_processor |
+| Idioma | `"Desarrollador Frontend"`, `"Ing. Datos"` | `"Software Developers"` | LLM |
+| Abreviatura / sinónimo | `"RRHH"`, `"comercial"`, `"ventas B2B"` | `"Human Resources Managers"` | LLM |
+| Género gramatical | `"Desarrolladora"`, `"Analista de Datos"` | `"Data Scientists..."` | LLM |
 
 ### Script para generar el sample input
 

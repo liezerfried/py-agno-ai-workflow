@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "edit-article": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "computedHash": "e0c50de6d64f528cb4ea32b142e2ec499e291efbc6996369ac4a1eea76d4870c"
+    }
+  }
+}
