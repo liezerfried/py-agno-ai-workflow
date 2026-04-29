@@ -27,6 +27,33 @@ from agents.pre_processor import normalize_title
     ("Desarrolladora Backend", "desarrolladora backend"),
     # Already clean
     ("Software Engineer", "software engineer"),
+    # Cycle 1 — em-dash / en-dash separator
+    ("Dev — Remote", "dev"),
+    ("Dev – Remoto", "dev"),
+    # Cycle 2 — non-breaking space (NFKD maps   → ASCII space, already handled)
+    ("Software Engineer", "software engineer"),
+    # Cycle 3 — ampersand expansion
+    ("Sales & Marketing Manager", "sales and marketing manager"),
+    ("Research & Development", "research and development"),
+    # Cycle 4 — comma + credential stripping
+    ("Accountant, CPA", "accountant"),
+    ("Nurse, RN", "nurse"),
+    # Cycle 5 — trailing filler words
+    ("Engineering of", "engineering"),
+    ("Developer and", "developer"),
+    ("Head of Engineering", "engineering"),
+    # Cycle 6 — numeric level suffix
+    ("Developer 2", "developer"),
+    ("Engineer 3", "engineer"),
+    # Cycle 7 — Roman numeral level suffix (II+ only; I alone is ambiguous)
+    ("Developer II", "developer"),
+    ("Engineer III", "engineer"),
+    ("Analyst IV", "analyst"),
+    ("Developer I", "developer i"),
+    # Cycle 8 — edge cases
+    ("", ""),
+    ("   ", ""),
+    ("x", "x"),
 ])
 def test_normalize_title(raw: str, expected: str) -> None:
     assert normalize_title(raw) == expected

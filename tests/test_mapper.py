@@ -24,6 +24,7 @@ def test_exact_score_method() -> None:
     with patch("agents.mapper_agent.process.extract", return_value=[("Frontend Developers", 100, 3)]):
         decision = _decide(_anomaly("Frontend Developers"), VALID, VALID_SET)
     assert decision.method == "exact"
+    assert decision.normalization_type == "format"
     assert decision.needs_review is False
     assert decision.corrected == "Frontend Developers"
 
@@ -32,6 +33,7 @@ def test_fuzzy_high_confidence_no_llm() -> None:
     with patch("agents.mapper_agent.process.extract", return_value=[("Frontend Developers", 95, 3)]):
         decision = _decide(_anomaly("Fronted Developers"), VALID, VALID_SET)
     assert decision.method == "fuzzy"
+    assert decision.normalization_type == "typo"
     assert decision.needs_review is False
     assert decision.corrected == "Frontend Developers"
 
@@ -40,6 +42,7 @@ def test_low_confidence_escalates_without_llm() -> None:
     with patch("agents.mapper_agent.process.extract", return_value=[("Software Engineers", 40, 0)]):
         decision = _decide(_anomaly("xyzzy123"), VALID, VALID_SET)
     assert decision.method == "needs_review"
+    assert decision.normalization_type == "unknown"
     assert decision.needs_review is True
     assert decision.corrected is None
 
@@ -48,6 +51,7 @@ def test_llm_band_equivalent_accepted() -> None:
     semantic = SemanticMatch(
         is_equivalent=True,
         canonical_title="Human Resources Managers",
+        normalization_type="abbreviation",
         reasoning="RRHH is a Spanish abbreviation for Human Resources.",
     )
     mock_run = MagicMock()
@@ -58,6 +62,7 @@ def test_llm_band_equivalent_accepted() -> None:
             decision = _decide(_anomaly("RRHH"), VALID, VALID_SET)
 
     assert decision.method == "llm"
+    assert decision.normalization_type == "abbreviation"
     assert decision.needs_review is False
     assert decision.corrected == "Human Resources Managers"
 
@@ -66,6 +71,7 @@ def test_llm_band_not_equivalent_escalates() -> None:
     semantic = SemanticMatch(
         is_equivalent=False,
         canonical_title=None,
+        normalization_type="unknown",
         reasoning="comercial does not map to any candidate.",
     )
     mock_run = MagicMock()
@@ -76,6 +82,7 @@ def test_llm_band_not_equivalent_escalates() -> None:
             decision = _decide(_anomaly("comercial"), VALID, VALID_SET)
 
     assert decision.method == "needs_review"
+    assert decision.normalization_type == "unknown"
     assert decision.needs_review is True
     assert decision.corrected is None
 
@@ -84,6 +91,7 @@ def test_hallucination_guard_rejects_invented_title() -> None:
     semantic = SemanticMatch(
         is_equivalent=True,
         canonical_title="Chief People Officer",   # not in VALID_SET
+        normalization_type="unknown",
         reasoning="Hallucinated title.",
     )
     mock_run = MagicMock()
@@ -94,6 +102,7 @@ def test_hallucination_guard_rejects_invented_title() -> None:
             decision = _decide(_anomaly("RRHH"), VALID, VALID_SET)
 
     assert decision.needs_review is True
+    assert decision.normalization_type == "unknown"
     assert decision.corrected is None
 
 
@@ -103,5 +112,6 @@ def test_llm_timeout_falls_back_to_needs_review() -> None:
             decision = _decide(_anomaly("RRHH"), VALID, VALID_SET)
 
     assert decision.method == "needs_review"
+    assert decision.normalization_type == "unknown"
     assert decision.needs_review is True
     assert decision.corrected is None

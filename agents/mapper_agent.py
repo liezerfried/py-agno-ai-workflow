@@ -17,6 +17,7 @@ class MappingDecision(BaseModel):
     corrected: str | None          # None when needs_review=True; must be exact CSV value
     confidence: float
     method: Literal["exact", "fuzzy", "llm", "needs_review"]
+    normalization_type: Literal["typo", "synonym", "language", "format", "abbreviation", "case", "unknown"]
     needs_review: bool
 
 
@@ -30,6 +31,7 @@ class MappingResult(BaseModel):
 class SemanticMatch(BaseModel):
     is_equivalent: bool
     canonical_title: str | None    # must be one of the top-3 candidates passed in prompt
+    normalization_type: Literal["language", "synonym", "abbreviation", "unknown"]
     reasoning: str
 
 
@@ -42,6 +44,7 @@ mapper_agent = Agent(
         "Decide if the job title is semantically equivalent to any candidate (same role, different words).",
         "Set canonical_title to the exact candidate string if equivalent, null if none fit.",
         "Never invent or modify a title — canonical_title must be copied verbatim from the candidates list.",
+        "Set normalization_type to one of: language (title is in a foreign language), abbreviation (title uses an acronym or abbreviation), synonym (gender inflection or alternate wording for the same role), unknown (if unclear).",
         "Provide one sentence of reasoning for the audit trail.",
     ],
 )
@@ -63,6 +66,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=None,
             confidence=0.0,
             method="needs_review",
+            normalization_type="unknown",
             needs_review=True,
         )
 
@@ -76,6 +80,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=top_match,
             confidence=top_score,
             method="exact",
+            normalization_type="format",
             needs_review=False,
         )
 
@@ -86,6 +91,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=top_match,
             confidence=top_score,
             method="fuzzy",
+            normalization_type="typo",
             needs_review=False,
         )
 
@@ -96,6 +102,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=None,
             confidence=top_score,
             method="needs_review",
+            normalization_type="unknown",
             needs_review=True,
         )
 
@@ -121,6 +128,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
                 corrected=None,
                 confidence=top_score,
                 method="needs_review",
+                normalization_type="unknown",
                 needs_review=True,
             )
 
@@ -131,6 +139,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
                 corrected=semantic.canonical_title,
                 confidence=top_score,
                 method="llm",
+                normalization_type=semantic.normalization_type,
                 needs_review=False,
             )
 
@@ -140,6 +149,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=None,
             confidence=top_score,
             method="needs_review",
+            normalization_type="unknown",
             needs_review=True,
         )
 
@@ -150,6 +160,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=None,
             confidence=top_score,
             method="needs_review",
+            normalization_type="unknown",
             needs_review=True,
         )
 
