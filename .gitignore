@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# Pytest
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+
+# uv
+uv.lock
+
+# Chainlit runtime
+.chainlit/
+.files/
+chainlit.md
+
+# Data — raw uploads and pipeline output (keep valid_categories.csv)
+data/raw/
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db

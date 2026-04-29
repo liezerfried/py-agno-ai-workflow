@@ -1,61 +1,130 @@
 # py-agno-ai-workflow
 
-An AI-powered data normalization system built with [Agno](https://docs.agno.com), designed to automatically classify and standardize free-text job titles and occupational categories from Excel files into structured, system-ready formats.
+AI-powered pipeline that maps free-text job categories to canonical **O\*NET occupation titles** and returns a corrected Excel file with a full audit trail.
 
 ## Purpose
 
-Organizations across job boards, ATS platforms, recruiting firms, and HR departments constantly deal with the same problem: humans write job titles and categories freely, but software systems expect exact, normalized values.
+Organizations across job boards, ATS platforms, recruiting firms, and HR departments deal with the same problem: humans write job categories freely, but software expects exact O\*NET-normalized values.
 
 ```
-"Dev Front"             ≠  "Frontend Developer"
-"RRHH"                  ≠  "Human Resources"
-"Desarrollador Backend" ≠  "Backend Developer"
+"Dev Front"             →  "Web Developers"
+"RRHH"                  →  "Human Resources Managers"
+"Desarrollador Backend" →  "Software Developers"
+"Senior Fronted Dev"    →  "Web Developers"
 ```
 
-A human understands these are equivalent. A database query, search filter, or ATS does not. Today this is cleaned manually — this system automates it.
+A human understands these are equivalent. A database query, ATS filter, or analytics system does not. This pipeline automates the mapping — with an audit trail and a human review queue for cases it cannot confidently resolve.
 
 ## How It Works
 
-Users upload an Excel file through a web interface. The agent workflow processes each row, maps free-text job titles to valid standardized categories, and returns a clean, structured output ready for ingestion into any system.
+Users upload an Excel file through a Chainlit web interface. A 4-step Agno **Workflow** processes the data linearly:
 
-The architecture uses Agno's **Workflow + Step** pattern for predictable, linear orchestration — no graph complexity, just a clear pipeline where each step has a defined role.
+```
+IngestAgent → ValidatorAgent → MapperAgent → AuditWriter
+```
 
-### Key components
+| Step | Role |
+|------|------|
+| **IngestAgent** | Read Excel with openpyxl; extract unique raw categories from the target column |
+| **ValidatorAgent** | Compare against `valid_categories.csv` (923 O\*NET titles); flag anomalies |
+| **MapperAgent** | Run rapidfuzz pre-filter, then LLM for ambiguous cases; output typed Pydantic result |
+| **AuditWriter** | Write corrected Excel + audit log sheet + review queue for unresolved cases |
 
-- **Agno Workflow** — orchestrates the processing pipeline step by step
-- **Agent(s)** — classify and normalize each job title using an LLM with domain knowledge
-- **Human-in-the-loop** — unresolvable cases are flagged for manual review instead of guessed
-- **Chainlit** — web interface for file upload and result display
+**rapidfuzz always runs before any LLM call** — obvious typos and casing variants are resolved with zero token cost.
+
+### Normalization types handled
+
+| # | Type | Resolved by |
+|---|------|-------------|
+| 1 | Typo (`"Fronted Developer"`) | rapidfuzz |
+| 2 | Casing/punctuation (`"FULL-STACK DEVELOPER"`) | pre_processor |
+| 3 | Seniority stripping (`"Senior Frontend Dev"`) | pre_processor |
+| 4 | Noise/context (`"Dev - Remoto (Contract)"`) | pre_processor |
+| 5 | Language (`"Desarrollador Backend"`) | LLM |
+| 6 | Abbreviation/synonym (`"RRHH"`, `"comercial"`) | LLM |
+| 7 | Gender inflection (`"Desarrolladora"`) | LLM |
+
+## Confidence & Human-in-the-Loop
+
+```
+≥ 0.90      →  auto-correct   (no LLM call — zero token cost)
+0.70–0.89   →  LLM evaluates semantic equivalence
+< 0.70      →  escalated to human review queue
+```
+
+**Hard invariant:** the system never invents a category. Every `corrected` value must be an exact string from `valid_categories.csv`. Cases below the confidence threshold go to the review queue — never silently applied.
 
 ## Target Users
 
 | Context | User | Input |
 |---------|------|-------|
 | Job board (LinkedIn, Bumeran) | Company posting jobs | Excel with raw vacancy categories |
-| HR / ATS system | HR analyst | System export with unnormalized candidate titles |
-| Recruiting firm | Recruiter | CV database with titles as candidates wrote them |
-| Legacy system migration | Data administrator | Historical database dump with inconsistent categories |
+| HR / ATS system | HR analyst | System export with unnormalized titles |
+| Recruiting firm | Recruiter | CV database with titles as written by candidates |
+| Legacy system migration | Data admin | Historical DB dump with inconsistent categories |
 | Upskilling platform | Content team | Skills catalog with variants and synonyms |
 
 ## Stack
 
-- **Python** — core language
-- **Agno** — agent framework and workflow orchestration
-- **Chainlit** — conversational web UI
-- **LM Studio** — local LLM inference (model TBD)
-- **Pandas / openpyxl** — Excel processing
+| Layer | Tool |
+|-------|------|
+| Language | Python 3.12 |
+| Package manager | uv |
+| Agent framework | Agno ≥ 1.0 |
+| UI | Chainlit |
+| LLM (dev) | LM Studio (`agno.models.lmstudio`) |
+| LLM (prod) | Groq — `llama-3.3-70b-versatile` |
+| Fuzzy matching | rapidfuzz |
+| Data processing | Pandas, openpyxl |
+| Analytics | DuckDB |
+| Output validation | Pydantic v2 |
+| API layer | AgentOS (`agno.os.AgentOS`) wraps FastAPI |
+| OpenAI SDK | Required — Agno's `OpenAILike` / `LMStudio` depend on it |
+| Observability | Agno built-in traces (visible at `os.agno.com`) |
+
+## Data & Valid Categories
+
+Source: **O\*NET** `Related Occupations.xlsx` (US Department of Labor) — 923 canonical occupation titles.
+
+`data/valid_categories.csv` is generated by `scripts/build_valid_categories.py` from the raw O\*NET file. The `AuditWriter` agent verifies every proposed correction against this list before writing output.
+
+## Runtime / Providers
+
+Provider selection lives in `infrastructure/llm/provider.py` — switch between LM Studio (dev) and Groq (prod) there, never inside agent files.
+
+```python
+# dev
+from agno.models.lmstudio import LMStudio
+
+# prod
+from agno.models.groq import Groq  # llama-3.3-70b-versatile
+```
 
 ## Project Structure
 
 ```
 py-agno-ai-workflow/
+├── agents/
+│   ├── ingest_agent.py
+│   ├── validator_agent.py
+│   ├── mapper_agent.py
+│   ├── audit_writer_agent.py
+│   └── pre_processor.py        # casing, seniority, noise — zero token cost
+├── workflows/
+│   └── normalization_workflow.py
+├── infrastructure/
+│   └── llm/
+│       └── provider.py         # single place to swap dev ↔ prod model
 ├── data/
-│   └── raw/                  # Input Excel files
-├── docs/                     # Architecture and design documentation
-├── scripts/                  # Utility scripts
-└── README.md
+│   ├── valid_categories.csv    # 923 O*NET canonical titles
+│   └── raw/                    # input Excel files
+├── scripts/
+│   └── build_valid_categories.py
+└── docs/                       # architecture and design documentation
 ```
 
 ## Status
 
-Active development — currently structuring data pipeline and agent orchestration design.
+**All 4 agents scaffolded** (`IngestAgent`, `ValidatorAgent`, `MapperAgent`, `AuditWriter`) and linear `Workflow` wired. Pre-processor normalization rules implemented and unit-tested.
+
+**Next milestone:** end-to-end integration test — upload Excel → corrected Excel + audit sheet output.
