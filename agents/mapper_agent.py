@@ -57,11 +57,24 @@ def _get_agent() -> Agent:
             model=get_model(),
             output_schema=SemanticMatch,
             instructions=[
-                "You receive a job title and up to 3 candidate canonical O*NET occupation titles ranked by similarity.",
-                "Decide if the job title is semantically equivalent to any candidate (same role, different words).",
-                "Set canonical_title to the exact candidate string if equivalent, null if none fit.",
-                "Never invent or modify a title — canonical_title must be copied verbatim from the candidates list.",
-                "Set normalization_type to one of: language (title is in a foreign language), abbreviation (title uses an acronym or abbreviation), synonym (gender inflection or alternate wording for the same role), unknown (if unclear).",
+                # Role and context
+                "You are a job title normalization expert working with the O*NET occupational database (US Dept. of Labor).",
+                "Your task: decide if a raw job title is semantically equivalent to one of the provided O*NET canonical titles.",
+                # Core rule — is_equivalent
+                "Set is_equivalent=true ONLY when the raw title and a candidate describe the SAME professional role.",
+                "Set is_equivalent=false when: the role is different, too vague, or none of the candidates fit — even if the words look similar.",
+                # Core rule — canonical_title
+                "When is_equivalent=true: copy one candidate verbatim into canonical_title. Do NOT rephrase, shorten, or translate.",
+                "When is_equivalent=false: canonical_title MUST be null. Never invent a title outside the candidates list.",
+                # normalization_type guide with examples
+                "Set normalization_type based on WHY the raw title differs from its canonical form:",
+                "  language   → raw title is in a foreign language. Example: 'Desarrollador Backend' → 'Backend Web Developers'",
+                "  abbreviation → raw title uses an acronym or shorthand. Example: 'RRHH' → 'Human Resources Managers', 'QA' → 'Software Quality Assurance Analysts and Testers'",
+                "  synonym    → gender inflection, alternate wording, or job-title variant for the same role. Example: 'Desarrolladora Frontend' → 'Frontend Web Developers'",
+                "  unknown    → you cannot determine the reason with confidence.",
+                # Hard guardrails
+                "NEVER hallucinate: if is_equivalent=true, canonical_title must be exactly one of the candidate strings provided in the prompt.",
+                "When in doubt, set is_equivalent=false. A false negative (missed correction) is always safer than a hallucination.",
             ],
         )
     return _mapper_agent

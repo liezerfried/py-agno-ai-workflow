@@ -1,12 +1,22 @@
 import asyncio
 from functools import partial
+from pathlib import Path
 
 import chainlit as cl
+
+from agno.db.sqlite import SqliteDb
+from agno.tracing import setup_tracing
 
 from agents.audit_writer_agent import AuditResult
 from agents.ingest_agent import scan_headers
 from workflows.normalization_workflow import create_workflow
 from workflows.pipeline import PipelineError
+
+# Tracing — all agent and workflow runs are captured to tmp/traces.db.
+# View at https://app.agno.com after connecting with AGNO_API_KEY,
+# or query the SQLite file directly.
+Path("tmp").mkdir(exist_ok=True)
+setup_tracing(db=SqliteDb(db_file="tmp/traces.db"), batch_processing=True)
 
 
 def _run_workflow(file_path: str, target_column: str) -> AuditResult:
