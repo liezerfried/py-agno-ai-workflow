@@ -55,7 +55,11 @@ def test_anomalies_prefiltered() -> None:
     class FakeStepInput:
         previous_step_content = ingest_result.model_dump_json()
 
-    session_state = {"valid_categories": VALID, "valid_categories_set": set(VALID)}
+    session_state = {
+        "file_path": "dummy.xlsx",
+        "target_column": "job",
+        "valid_categories": VALID,
+    }
     output: StepOutput = validator_executor(FakeStepInput(), session_state)  # type: ignore[arg-type]
 
     from agents.validator_agent import ValidatorResult

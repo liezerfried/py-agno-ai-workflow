@@ -1,4 +1,3 @@
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -8,6 +7,9 @@ from pydantic import BaseModel
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
 from agents.mapper_agent import MappingDecision, MappingResult
+from domain.onet import is_valid_onet_title
+from infrastructure.pipeline.session import PipelineSession
+from infrastructure.pipeline.step_io import deserialize, fail, ok
 
 
 class AuditResult(BaseModel):
@@ -39,7 +41,7 @@ def _write_excel(
 
     # Sheet 2: Review queue
     ws_review = wb_out.create_sheet("Review Queue")
-    ws_review.append(["original_category", "reason"])
+    ws_review.append(["original_category", "preprocessed", "review_reason"])
 
     corrected_count = 0
     review_queue_count = 0
@@ -56,15 +58,15 @@ def _write_excel(
 
         if decision.needs_review:
             ws_corrected.append(list(row) + [None, decision.method, decision.confidence])
-            ws_review.append([decision.raw, decision.method])
+            ws_review.append([decision.raw, decision.preprocessed, decision.review_reason or "needs_review"])
             review_queue_count += 1
             continue
 
         corrected = decision.corrected
-        # Hard invariant: verify correction is in valid_categories_set before writing
-        if corrected not in valid_categories_set:
+        # Hard invariant: verify correction is a valid O*NET title before writing
+        if not is_valid_onet_title(corrected, valid_categories_set):
             ws_corrected.append(list(row) + [None, "needs_review", decision.confidence])
-            ws_review.append([decision.raw, "hallucination_rejected"])
+            ws_review.append([decision.raw, decision.preprocessed, "hallucination_rejected"])
             hallucination_count += 1
             review_queue_count += 1
             continue
@@ -85,18 +87,16 @@ def _write_excel(
 
 def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
     try:
-        mapping_result = MappingResult.model_validate_json(step_input.previous_step_content)
-        file_path: str = session_state["file_path"]
-        target_column: str = session_state["target_column"]
-        valid_categories_set: set[str] = session_state["valid_categories_set"]
+        session = PipelineSession.from_dict(session_state)
+        mapping_result = deserialize(step_input.previous_step_content, MappingResult)
 
         decisions_by_raw = {d.raw: d for d in mapping_result.decisions}
 
         output_path, corrected_count, review_queue_count, hallucination_count = _write_excel(
-            source_path=file_path,
+            source_path=session.file_path,
             decisions_by_raw=decisions_by_raw,
-            target_column=target_column,
-            valid_categories_set=valid_categories_set,
+            target_column=session.target_column,
+            valid_categories_set=session.valid_categories_set,
         )
 
         total_attempted = corrected_count + hallucination_count
@@ -109,9 +109,9 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
             hallucination_count=hallucination_count,
             precision=precision,
         )
-        return StepOutput(content=result.model_dump_json())
+        return ok(result)
     except Exception as e:
-        return StepOutput(content=str(e), success=False, stop=True)
+        return fail(e)
 
 
 audit_step = Step(name="audit", executor=audit_executor, on_error=OnError.fail)

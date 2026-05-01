@@ -1,14 +1,20 @@
+import logging
 from typing import Literal
 
-from pydantic import BaseModel
-from rapidfuzz import fuzz, process
+from pydantic import BaseModel, model_validator
 
 from agno.agent import Agent
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
-from agents.pre_processor import normalize_title
-from agents.validator_agent import CategoryValidation, ValidatorResult
+from agents.mapping_pipeline import PipelineConfig, score, routing_band
+from agents.validator_agent import ValidatorResult
+from infrastructure.pipeline.contracts import CategoryValidation
+from domain.onet import is_valid_onet_title
 from infrastructure.llm.provider import get_model
+from infrastructure.pipeline.session import PipelineSession
+from infrastructure.pipeline.step_io import deserialize, fail, ok
+
+logger = logging.getLogger(__name__)
 
 
 class MappingDecision(BaseModel):
@@ -19,169 +25,158 @@ class MappingDecision(BaseModel):
     method: Literal["exact", "fuzzy", "llm", "needs_review"]
     normalization_type: Literal["typo", "synonym", "language", "format", "abbreviation", "case", "unknown"]
     needs_review: bool
+    review_reason: str | None = None
+
+    @model_validator(mode="after")
+    def _review_fields_consistent(self) -> "MappingDecision":
+        if self.needs_review and self.review_reason is None:
+            raise ValueError("review_reason must be set when needs_review=True")
+        if not self.needs_review and self.review_reason is not None:
+            raise ValueError("review_reason must be None when needs_review=False")
+        return self
 
 
 class MappingResult(BaseModel):
     decisions: list[MappingDecision]
-    auto_corrected_count: int
-    llm_evaluated_count: int
-    needs_review_count: int
 
 
 class SemanticMatch(BaseModel):
     is_equivalent: bool
     canonical_title: str | None    # must be one of the top-3 candidates passed in prompt
     normalization_type: Literal["language", "synonym", "abbreviation", "unknown"]
-    reasoning: str
 
 
-mapper_agent = Agent(
-    name="MapperAgent",
-    model=get_model(),
-    output_schema=SemanticMatch,
-    instructions=[
-        "You receive a job title and up to 3 candidate canonical O*NET occupation titles ranked by similarity.",
-        "Decide if the job title is semantically equivalent to any candidate (same role, different words).",
-        "Set canonical_title to the exact candidate string if equivalent, null if none fit.",
-        "Never invent or modify a title — canonical_title must be copied verbatim from the candidates list.",
-        "Set normalization_type to one of: language (title is in a foreign language), abbreviation (title uses an acronym or abbreviation), synonym (gender inflection or alternate wording for the same role), unknown (if unclear).",
-        "Provide one sentence of reasoning for the audit trail.",
-    ],
-)
+_mapper_agent: Agent | None = None
 
-_TOP_N = 3
-_HIGH_THRESHOLD = 0.90
-_LOW_THRESHOLD = 0.70
+
+def _get_agent() -> Agent:
+    global _mapper_agent
+    if _mapper_agent is None:
+        _mapper_agent = Agent(
+            name="MapperAgent",
+            model=get_model(),
+            output_schema=SemanticMatch,
+            instructions=[
+                "You receive a job title and up to 3 candidate canonical O*NET occupation titles ranked by similarity.",
+                "Decide if the job title is semantically equivalent to any candidate (same role, different words).",
+                "Set canonical_title to the exact candidate string if equivalent, null if none fit.",
+                "Never invent or modify a title — canonical_title must be copied verbatim from the candidates list.",
+                "Set normalization_type to one of: language (title is in a foreign language), abbreviation (title uses an acronym or abbreviation), synonym (gender inflection or alternate wording for the same role), unknown (if unclear).",
+            ],
+        )
+    return _mapper_agent
+
+
+def set_agent(agent: Agent | None) -> None:
+    """Override the agent instance. Used by tests to inject a stub without LM Studio."""
+    global _mapper_agent
+    _mapper_agent = agent
+
+
+_CONFIG = PipelineConfig()
 
 
 def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_categories_set: set[str]) -> MappingDecision:
-    preprocessed = normalize_title(anomaly.raw)
+    fuzzy = score(anomaly.raw, valid_categories, _CONFIG)
+    band = routing_band(fuzzy.top_score, _CONFIG)
 
-    top_matches = process.extract(preprocessed, valid_categories, scorer=fuzz.WRatio, limit=_TOP_N)
-
-    if not top_matches:
+    def _review(review_reason: str) -> MappingDecision:
         return MappingDecision(
             raw=anomaly.raw,
-            preprocessed=preprocessed,
+            preprocessed=fuzzy.preprocessed,
             corrected=None,
-            confidence=0.0,
+            confidence=fuzzy.top_score,
             method="needs_review",
             normalization_type="unknown",
             needs_review=True,
+            review_reason=review_reason,
         )
 
-    top_match, top_score_raw, _ = top_matches[0]
-    top_score = round(top_score_raw / 100.0, 4)
+    if fuzzy.top_match is None:
+        return _review("no_candidates")
 
-    if top_score == 1.0:
+    if band == "review":
+        return _review("low_confidence")
+
+    if band == "exact":
         return MappingDecision(
             raw=anomaly.raw,
-            preprocessed=preprocessed,
-            corrected=top_match,
-            confidence=top_score,
+            preprocessed=fuzzy.preprocessed,
+            corrected=fuzzy.top_match,
+            confidence=fuzzy.top_score,
             method="exact",
             normalization_type="format",
             needs_review=False,
         )
 
-    if top_score >= _HIGH_THRESHOLD:
+    if band == "fuzzy":
         return MappingDecision(
             raw=anomaly.raw,
-            preprocessed=preprocessed,
-            corrected=top_match,
-            confidence=top_score,
+            preprocessed=fuzzy.preprocessed,
+            corrected=fuzzy.top_match,
+            confidence=fuzzy.top_score,
             method="fuzzy",
             normalization_type="typo",
             needs_review=False,
         )
 
-    if top_score < _LOW_THRESHOLD:
-        return MappingDecision(
-            raw=anomaly.raw,
-            preprocessed=preprocessed,
-            corrected=None,
-            confidence=top_score,
-            method="needs_review",
-            normalization_type="unknown",
-            needs_review=True,
-        )
-
-    # 0.70–0.89 band: call LLM with top-3 candidates
-    candidates = [m[0] for m in top_matches]
-    candidates_text = "\n".join(f"  {i+1}. {c} (score: {round(m[1]/100.0, 2)})" for i, (c, m) in enumerate(zip(candidates, top_matches)))
+    # band == "llm": call LLM with top candidates
+    candidates_text = "\n".join(
+        f"  {i+1}. {title} (score: {s:.2f})"
+        for i, (title, s) in enumerate(fuzzy.candidates)
+    )
     prompt = (
         f'Job title to normalize: "{anomaly.raw}"\n'
-        f'Preprocessed form: "{preprocessed}"\n'
+        f'Preprocessed form: "{fuzzy.preprocessed}"\n'
         f"Candidate canonical titles (ranked by similarity):\n{candidates_text}\n\n"
         "Select the best match if semantically equivalent, or return null if none fit."
     )
 
     try:
-        run_result = mapper_agent.run(prompt)
+        run_result = _get_agent().run(prompt)
+        if not isinstance(run_result.content, SemanticMatch):
+            raise TypeError(f"LLM returned unexpected content type: {type(run_result.content).__name__}")
         semantic: SemanticMatch = run_result.content
 
-        # Guard: canonical_title must be one of the candidates we provided
-        if semantic.canonical_title is not None and semantic.canonical_title not in valid_categories_set:
-            return MappingDecision(
-                raw=anomaly.raw,
-                preprocessed=preprocessed,
-                corrected=None,
-                confidence=top_score,
-                method="needs_review",
-                normalization_type="unknown",
-                needs_review=True,
-            )
+        candidate_titles = {title for title, _ in fuzzy.candidates}
 
-        if semantic.is_equivalent and semantic.canonical_title in {c for c in candidates}:
+        if semantic.is_equivalent:
+            # LLM claims a match — canonical_title must be a valid O*NET title in our candidates
+            if not is_valid_onet_title(semantic.canonical_title, valid_categories_set) or semantic.canonical_title not in candidate_titles:
+                logger.warning("LLM hallucination for %r: returned %r", anomaly.raw, semantic.canonical_title)
+                return _review("llm_hallucination")
             return MappingDecision(
                 raw=anomaly.raw,
-                preprocessed=preprocessed,
+                preprocessed=fuzzy.preprocessed,
                 corrected=semantic.canonical_title,
-                confidence=top_score,
+                confidence=fuzzy.top_score,
                 method="llm",
                 normalization_type=semantic.normalization_type,
                 needs_review=False,
             )
 
-        return MappingDecision(
-            raw=anomaly.raw,
-            preprocessed=preprocessed,
-            corrected=None,
-            confidence=top_score,
-            method="needs_review",
-            normalization_type="unknown",
-            needs_review=True,
-        )
+        # LLM said not equivalent — legitimate no-match, not a hallucination
+        return _review("llm_no_match")
 
-    except Exception:
-        return MappingDecision(
-            raw=anomaly.raw,
-            preprocessed=preprocessed,
-            corrected=None,
-            confidence=top_score,
-            method="needs_review",
-            normalization_type="unknown",
-            needs_review=True,
-        )
+    except Exception as exc:
+        logger.warning("LLM call failed for %r: %s", anomaly.raw, exc)
+        return _review("llm_error")
 
 
 def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
     try:
-        validator_result = ValidatorResult.model_validate_json(step_input.previous_step_content)
-        valid_categories: list[str] = session_state["valid_categories"]
-        valid_categories_set: set[str] = session_state["valid_categories_set"]
+        session = PipelineSession.from_dict(session_state)
+        validator_result = deserialize(step_input.previous_step_content, ValidatorResult)
 
-        decisions = [_decide(anomaly, valid_categories, valid_categories_set) for anomaly in validator_result.anomalies]
+        decisions = [
+            _decide(anomaly, session.valid_categories, session.valid_categories_set)
+            for anomaly in validator_result.anomalies
+        ]
 
-        result = MappingResult(
-            decisions=decisions,
-            auto_corrected_count=sum(1 for d in decisions if d.method in {"exact", "fuzzy"}),
-            llm_evaluated_count=sum(1 for d in decisions if d.method == "llm"),
-            needs_review_count=sum(1 for d in decisions if d.needs_review),
-        )
-        return StepOutput(content=result.model_dump_json())
+        result = MappingResult(decisions=decisions)
+        return ok(result)
     except Exception as e:
-        return StepOutput(content=str(e), success=False, stop=True)
+        return fail(e)
 
 
 mapper_step = Step(name="map", executor=mapper_executor, on_error=OnError.fail)

@@ -35,3 +35,6 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "real_llm: marks tests that make live LLM calls (deselect with -m 'not real_llm')",
+]

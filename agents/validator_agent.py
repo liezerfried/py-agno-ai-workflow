@@ -1,16 +1,12 @@
-from pydantic import BaseModel
 from rapidfuzz import fuzz, process
+from pydantic import BaseModel
 
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
 from agents.ingest_agent import IngestResult
-
-
-class CategoryValidation(BaseModel):
-    raw: str
-    is_valid: bool
-    closest_match: str | None
-    similarity_score: float   # 0.0–1.0
+from infrastructure.pipeline.contracts import CategoryValidation
+from infrastructure.pipeline.session import PipelineSession
+from infrastructure.pipeline.step_io import deserialize, fail, ok
 
 
 class ValidatorResult(BaseModel):
@@ -39,10 +35,10 @@ def _validate_category(raw: str, valid_categories: list[str]) -> CategoryValidat
 
 def validator_executor(step_input: StepInput, session_state: dict) -> StepOutput:
     try:
-        ingest_result = IngestResult.model_validate_json(step_input.previous_step_content)
-        valid_categories: list[str] = session_state["valid_categories"]
+        session = PipelineSession.from_dict(session_state)
+        ingest_result = deserialize(step_input.previous_step_content, IngestResult)
 
-        validations = [_validate_category(raw, valid_categories) for raw in ingest_result.raw_categories]
+        validations = [_validate_category(raw, session.valid_categories) for raw in ingest_result.raw_categories]
         anomalies = [v for v in validations if not v.is_valid]
 
         result = ValidatorResult(
@@ -51,9 +47,9 @@ def validator_executor(step_input: StepInput, session_state: dict) -> StepOutput
             anomaly_count=len(anomalies),
             anomalies=anomalies,
         )
-        return StepOutput(content=result.model_dump_json())
+        return ok(result)
     except Exception as e:
-        return StepOutput(content=str(e), success=False, stop=True)
+        return fail(e)
 
 
 validator_step = Step(name="validate", executor=validator_executor, on_error=OnError.fail)

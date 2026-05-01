@@ -3,6 +3,9 @@ from pydantic import BaseModel
 
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
+from infrastructure.pipeline.session import PipelineSession
+from infrastructure.pipeline.step_io import fail, ok
+
 
 class HeaderScanResult(BaseModel):
     file_path: str
@@ -55,12 +58,11 @@ def extract_categories(file_path: str, target_column: str) -> IngestResult:
 
 def ingest_executor(_step_input: StepInput, session_state: dict) -> StepOutput:
     try:
-        file_path: str = session_state["file_path"]
-        target_column: str = session_state["target_column"]
-        result = extract_categories(file_path, target_column)
-        return StepOutput(content=result.model_dump_json())
+        session = PipelineSession.from_dict(session_state)
+        result = extract_categories(session.file_path, session.target_column)
+        return ok(result)
     except Exception as e:
-        return StepOutput(content=str(e), success=False, stop=True)
+        return fail(e)
 
 
 ingest_step = Step(name="ingest", executor=ingest_executor, on_error=OnError.fail)

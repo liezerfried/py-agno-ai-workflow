@@ -12,4 +12,4 @@ def get_model():
         return Groq(id=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
 
     # Fallback to LM Studio; model name can be overridden via LMSTUDIO_MODEL.
-    return LMStudio(id=os.getenv("LMSTUDIO_MODEL", "qwen2.5-7b-instruct"))
+    return LMStudio(id=os.getenv("LMSTUDIO_MODEL", "qwen/qwen3.5-9b"))

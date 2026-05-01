@@ -3,13 +3,22 @@ from functools import partial
 
 import chainlit as cl
 
-from agno.workflow import StepInput
+from agents.audit_writer_agent import AuditResult
+from agents.ingest_agent import scan_headers
+from workflows.normalization_workflow import create_workflow
+from workflows.pipeline import PipelineError
 
-from agents.audit_writer_agent import AuditResult, audit_executor
-from agents.ingest_agent import IngestResult, ingest_executor, scan_headers
-from agents.mapper_agent import MappingResult, mapper_executor
-from agents.validator_agent import ValidatorResult, validator_executor
-from workflows.normalization_workflow import _load_valid_categories
+
+def _run_workflow(file_path: str, target_column: str) -> AuditResult:
+    workflow = create_workflow(file_path, target_column)
+    run_output = workflow.run()
+    step_results = run_output.step_results
+    if not step_results:
+        raise PipelineError("unknown", "Workflow produced no step results")
+    last = step_results[-1]
+    if not last.success:
+        raise PipelineError("pipeline", last.content)
+    return AuditResult.model_validate_json(last.content)
 
 
 @cl.on_chat_start
@@ -67,84 +76,24 @@ async def main(message: cl.Message) -> None:
         await cl.Message("No file loaded. Please restart the chat and upload a file.").send()
         return
 
-    valid_categories, valid_categories_set = _load_valid_categories()
-    session_state: dict = {
-        "file_path": file_path,
-        "target_column": target_column,
-        "valid_categories": valid_categories,
-        "valid_categories_set": valid_categories_set,
-    }
-
-    # ── Step 1: Ingest ────────────────────────────────────────────────────────
-    async with cl.Step(name="IngestAgent") as step:
-        step_input = StepInput()
-        ingest_out = await asyncio.get_event_loop().run_in_executor(
-            None, partial(ingest_executor, step_input, session_state)
-        )
-        if not ingest_out.success:
-            step.output = f"Failed: {ingest_out.content}"
-            await cl.Message(f"Pipeline stopped at IngestAgent:\n```\n{ingest_out.content}\n```").send()
+    async with cl.Step(name="Normalization Pipeline") as step:
+        step.output = "Running pipeline…"
+        try:
+            result: AuditResult = await asyncio.get_event_loop().run_in_executor(
+                None,
+                partial(_run_workflow, file_path, target_column),
+            )
+        except PipelineError as exc:
+            step.output = f"Failed at {exc.stage}: {exc.message}"
+            await cl.Message(f"Pipeline stopped:\n```\n{exc}\n```").send()
             return
 
-        ingest_result = IngestResult.model_validate_json(ingest_out.content)
+        precision_str = (
+            f"{result.precision:.2%}" if result.precision is not None else "N/A"
+        )
         step.output = (
-            f"Read **{ingest_result.total_rows}** rows — "
-            f"found **{len(ingest_result.raw_categories)}** unique categories."
-        )
-
-    # ── Step 2: Validate ──────────────────────────────────────────────────────
-    async with cl.Step(name="ValidatorAgent") as step:
-        step_input = StepInput(previous_step_content=ingest_out.content)
-        validator_out = await asyncio.get_event_loop().run_in_executor(
-            None, partial(validator_executor, step_input, session_state)
-        )
-        if not validator_out.success:
-            step.output = f"Failed: {validator_out.content}"
-            await cl.Message(f"Pipeline stopped at ValidatorAgent:\n```\n{validator_out.content}\n```").send()
-            return
-
-        validator_result = ValidatorResult.model_validate_json(validator_out.content)
-        step.output = (
-            f"**{validator_result.valid_count}** already valid — "
-            f"**{validator_result.anomaly_count}** anomalies to map."
-        )
-
-    # ── Step 3: Map ───────────────────────────────────────────────────────────
-    async with cl.Step(name="MapperAgent") as step:
-        step.output = f"Processing {validator_result.anomaly_count} anomalies (rapidfuzz + LLM)..."
-        step_input = StepInput(previous_step_content=validator_out.content)
-        mapper_out = await asyncio.get_event_loop().run_in_executor(
-            None, partial(mapper_executor, step_input, session_state)
-        )
-        if not mapper_out.success:
-            step.output = f"Failed: {mapper_out.content}"
-            await cl.Message(f"Pipeline stopped at MapperAgent:\n```\n{mapper_out.content}\n```").send()
-            return
-
-        mapper_result = MappingResult.model_validate_json(mapper_out.content)
-        step.output = (
-            f"Auto-corrected: **{mapper_result.auto_corrected_count}** — "
-            f"LLM-evaluated: **{mapper_result.llm_evaluated_count}** — "
-            f"Needs review: **{mapper_result.needs_review_count}**"
-        )
-
-    # ── Step 4: Audit & write Excel ───────────────────────────────────────────
-    async with cl.Step(name="AuditWriter") as step:
-        step.output = "Writing corrected Excel + audit log..."
-        step_input = StepInput(previous_step_content=mapper_out.content)
-        audit_out = await asyncio.get_event_loop().run_in_executor(
-            None, partial(audit_executor, step_input, session_state)
-        )
-        if not audit_out.success:
-            step.output = f"Failed: {audit_out.content}"
-            await cl.Message(f"Pipeline stopped at AuditWriter:\n```\n{audit_out.content}\n```").send()
-            return
-
-        audit_result = AuditResult.model_validate_json(audit_out.content)
-        precision_str = f"{audit_result.precision:.2%}" if audit_result.precision is not None else "N/A"
-        step.output = (
-            f"Corrected: **{audit_result.corrected_count}** — "
-            f"Review queue: **{audit_result.review_queue_count}** — "
+            f"Corrected: **{result.corrected_count}** — "
+            f"Review queue: **{result.review_queue_count}** — "
             f"Precision: **{precision_str}**"
         )
 
@@ -153,15 +102,15 @@ async def main(message: cl.Message) -> None:
             f"Pipeline complete.\n\n"
             f"| Metric | Value |\n"
             f"|--------|-------|\n"
-            f"| Corrected | {audit_result.corrected_count} |\n"
-            f"| Needs review | {audit_result.review_queue_count} |\n"
+            f"| Corrected | {result.corrected_count} |\n"
+            f"| Needs review | {result.review_queue_count} |\n"
             f"| Precision | {precision_str} |\n\n"
             "Download your corrected file:"
         ),
         elements=[
             cl.File(
                 name="corrected.xlsx",
-                path=audit_result.output_path,
+                path=result.output_path,
                 display="inline",
             )
         ],
