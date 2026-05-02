@@ -1,5 +1,7 @@
 # py-agno-ai-workflow
 
+[![CI](https://github.com/liezerfried/py-agno-ai-workflow/actions/workflows/ci.yml/badge.svg)](https://github.com/liezerfried/py-agno-ai-workflow/actions/workflows/ci.yml)
+
 An AI-powered data normalization system built with [Agno](https://docs.agno.com), designed to automatically classify and standardize free-text job titles and occupational categories from Excel files into structured, system-ready formats.
 
 ## Purpose
