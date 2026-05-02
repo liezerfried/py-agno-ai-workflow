@@ -61,3 +61,5 @@ py-agno-ai-workflow/
 ## Status
 
 Active development — currently structuring data pipeline and agent orchestration design.
+
+<!-- CodeRabbit/CI check: trivial change to validate PR review automation. -->
