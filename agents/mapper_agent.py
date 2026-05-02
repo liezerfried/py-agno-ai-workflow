@@ -7,6 +7,7 @@ from agno.agent import Agent
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
 from agents.mapping_pipeline import PipelineConfig, score, routing_band
+from agents.translator_agent import translate, TranslationResult
 from agents.validator_agent import ValidatorResult
 from infrastructure.pipeline.contracts import CategoryValidation
 from domain.onet import is_valid_onet_title
@@ -92,6 +93,7 @@ _CONFIG = PipelineConfig()
 def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_categories_set: set[str]) -> MappingDecision:
     fuzzy = score(anomaly.raw, valid_categories, _CONFIG)
     band = routing_band(fuzzy.top_score, _CONFIG)
+    translation = TranslationResult(english_title=anomaly.raw, was_translated=False, normalization_type="unknown")
 
     def _review(review_reason: str) -> MappingDecision:
         return MappingDecision(
@@ -109,7 +111,15 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
         return _review("no_candidates")
 
     if band == "review":
-        return _review("low_confidence")
+        translation = translate(anomaly.raw)
+        if translation.was_translated:
+            fuzzy_t = score(translation.english_title, valid_categories, _CONFIG)
+            band_t = routing_band(fuzzy_t.top_score, _CONFIG)
+            if band_t != "review":
+                fuzzy = fuzzy_t
+                band = band_t
+        if band == "review":
+            return _review("low_confidence")
 
     if band == "exact":
         return MappingDecision(
@@ -129,7 +139,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             corrected=fuzzy.top_match,
             confidence=fuzzy.top_score,
             method="fuzzy",
-            normalization_type="typo",
+            normalization_type=translation.normalization_type if translation.was_translated else "typo",
             needs_review=False,
         )
 

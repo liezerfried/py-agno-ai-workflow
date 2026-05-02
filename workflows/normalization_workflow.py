@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
 
-from agno.workflow import Step, Steps, Workflow
+from agno.workflow import Steps, Workflow
 
 from agents.audit_writer_agent import audit_step
 from agents.ingest_agent import ingest_step
@@ -12,13 +12,13 @@ from infrastructure.pipeline.session import PipelineSession
 _VALID_CATEGORIES_PATH = Path(__file__).parent.parent / "data" / "valid_categories.csv"
 
 
-def _load_valid_categories() -> list[str]:
+def load_valid_categories() -> list[str]:
     with open(_VALID_CATEGORIES_PATH, newline="", encoding="utf-8") as f:
         return [row["category"] for row in csv.DictReader(f)]
 
 
 def create_workflow(file_path: str, target_column: str) -> Workflow:
-    valid_categories = _load_valid_categories()
+    valid_categories = load_valid_categories()
 
     normalization_sequence = Steps(
         name="normalization",

@@ -1,7 +1,17 @@
+"""
+Writes the corrected Excel file and audit log after all mapping decisions are finalized.
+Called by the Workflow as the last step, after MapperAgent has produced a MappingResult.
+Hard invariant: a correction is ONLY written if it is an exact O*NET title — any LLM
+hallucination is caught here and routed to the review queue instead.
+"""
 from datetime import datetime
 from pathlib import Path
 
 import openpyxl
+
+# Pydantic is a data-validation library. Defining a class that extends BaseModel
+# means every field is automatically type-checked when the object is created.
+# Pass a string where 'corrected_count' is expected and Pydantic will raise an error.
 from pydantic import BaseModel
 
 from agno.workflow import OnError, Step, StepInput, StepOutput
@@ -13,10 +23,12 @@ from infrastructure.pipeline.step_io import deserialize, fail, ok
 
 
 class AuditResult(BaseModel):
-    output_path: str
-    corrected_count: int
-    review_queue_count: int
-    hallucination_count: int
+    """Summary statistics produced after writing the output Excel file."""
+
+    output_path: str          # Absolute file path of the corrected Excel workbook.
+    corrected_count: int      # Number of rows where a correction was successfully applied.
+    review_queue_count: int   # Number of rows sent to the human review queue (not auto-corrected).
+    hallucination_count: int  # Number of LLM suggestions rejected for naming a non-existent O*NET title.
     precision: float | None   # corrected / (corrected + hallucination); None if no corrections attempted
 
 
@@ -26,6 +38,37 @@ def _write_excel(
     target_column: str,
     valid_categories_set: set[str],
 ) -> tuple[str, int, int, int]:
+    """
+    Build and save the two-sheet output workbook, then return outcome counts.
+
+    The output file contains two sheets:
+      - "Corrected": every original row, plus three new columns showing what
+        correction was applied (or left blank if the row needs human review).
+      - "Review Queue": only the rows that could not be corrected automatically,
+        with a short reason explaining why each one needs a human decision.
+
+    This function also acts as the final hallucination guard: even if MapperAgent
+    returned a correction, it is verified here against valid_categories_set before
+    being written. Any title that is not an exact O*NET canonical title is rejected
+    and routed to the Review Queue instead.
+
+    O*NET (Occupational Information Network) is the US Department of Labor database
+    that provides 923 canonical job titles used as ground truth in this pipeline.
+    A canonical title is an exact string from data/valid_categories.csv — the system
+    never invents one; it only picks from that list.
+
+    Args:
+        source_path: Path to the original uploaded Excel file.
+        decisions_by_raw: Mapping from each raw (user-typed) category string to the
+            MappingDecision produced by MapperAgent. Categories that were already valid
+            O*NET titles are absent from this dict.
+        target_column: Name of the Excel column that holds the job category values.
+        valid_categories_set: The full set of 923 O*NET canonical titles, used for
+            the final hallucination check before writing.
+
+    Returns:
+        A 4-tuple of (output_path, corrected_count, review_queue_count, hallucination_count).
+    """
     wb_in = openpyxl.load_workbook(source_path)
     ws_in = wb_in.active
 
@@ -34,12 +77,12 @@ def _write_excel(
 
     wb_out = openpyxl.Workbook()
 
-    # Sheet 1: Corrected data
+    # Sheet 1: all original rows with correction columns appended.
     ws_corrected = wb_out.active
     ws_corrected.title = "Corrected"
     ws_corrected.append(headers + ["corrected_category", "correction_method", "confidence"])
 
-    # Sheet 2: Review queue
+    # Sheet 2: the audit log — rows a human must inspect before accepting.
     ws_review = wb_out.create_sheet("Review Queue")
     ws_review.append(["original_category", "preprocessed", "review_reason"])
 
@@ -53,18 +96,25 @@ def _write_excel(
 
         if decision is None:
             # Category was already valid — pass through unchanged
+            # (exact O*NET title detected at the ValidatorAgent step).
             ws_corrected.append(list(row) + [raw_val, "exact", 1.0])
             continue
 
         if decision.needs_review:
+            # 'needs_review' means the pipeline's confidence was too low to auto-correct
+            # (rapidfuzz score < 0.70). The system never guesses in this band.
+            # The correction column is left blank; the row goes to the Review Queue sheet.
             ws_corrected.append(list(row) + [None, decision.method, decision.confidence])
             ws_review.append([decision.raw, decision.preprocessed, decision.review_reason or "needs_review"])
             review_queue_count += 1
             continue
 
         corrected = decision.corrected
-        # Hard invariant: verify correction is a valid O*NET title before writing
+        # Hard invariant: verify correction is a valid O*NET title before writing.
+        # This is the hallucination guard — it catches cases where the LLM returned
+        # a title that sounds plausible but does not exist in valid_categories.csv.
         if not is_valid_onet_title(corrected, valid_categories_set):
+            # Reject the hallucination: blank the correction and send to review queue.
             ws_corrected.append(list(row) + [None, "needs_review", decision.confidence])
             ws_review.append([decision.raw, decision.preprocessed, "hallucination_rejected"])
             hallucination_count += 1
@@ -76,6 +126,7 @@ def _write_excel(
 
     wb_in.close()
 
+    # Build a timestamped output filename to avoid overwriting previous runs.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     source_stem = Path(source_path).stem
     output_dir = Path(source_path).parent
@@ -86,10 +137,35 @@ def _write_excel(
 
 
 def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
+    """
+    Agno Step executor that drives the full audit-and-write cycle.
+
+    In the Agno Workflow pattern, a Step is a named unit of work. The Workflow calls
+    each Step's executor in order, passing the previous step's output via
+    step_input.previous_step_content. The executor returns a StepOutput that the
+    next step will receive.
+
+    This executor:
+      1. Reconstructs the PipelineSession (file path, target column, valid titles).
+      2. Deserializes the MappingResult produced by MapperAgent.
+      3. Calls _write_excel to produce the corrected workbook.
+      4. Computes the precision metric and wraps everything in an AuditResult.
+
+    Args:
+        step_input: Agno-provided object containing the serialized MappingResult
+            from the previous step (MapperAgent).
+        session_state: Dictionary holding shared pipeline state (file path, target
+            column, canonical title list). Deserialized into a PipelineSession.
+
+    Returns:
+        A StepOutput wrapping a serialized AuditResult on success, or a failed
+        StepOutput (with stop=True) if an exception is raised.
+    """
     try:
         session = PipelineSession.from_dict(session_state)
         mapping_result = deserialize(step_input.previous_step_content, MappingResult)
 
+        # Build a lookup dict so each row in the Excel file can find its decision in O(1).
         decisions_by_raw = {d.raw: d for d in mapping_result.decisions}
 
         output_path, corrected_count, review_queue_count, hallucination_count = _write_excel(
@@ -99,6 +175,8 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
             valid_categories_set=session.valid_categories_set,
         )
 
+        # Precision = share of auto-corrections that were actually correct.
+        # None when nothing was attempted (e.g. all rows were already valid O*NET titles).
         total_attempted = corrected_count + hallucination_count
         precision = corrected_count / total_attempted if total_attempted > 0 else None
 
@@ -114,4 +192,7 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
         return fail(e)
 
 
+# Register this executor as a named Agno Step.
+# on_error=OnError.fail stops the entire Workflow if this step raises —
+# an incomplete audit must never be silently swallowed.
 audit_step = Step(name="audit", executor=audit_executor, on_error=OnError.fail)

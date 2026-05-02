@@ -486,3 +486,66 @@ def test_pipeline_batch_size(batch_size: int, tmp_path: Path, stub_llm) -> None:
     assert result.ingest.total_rows == batch_size
     assert len(result.mapper.decisions) > 0
     assert result.audit.hallucination_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 100-row real-data metrics test (requires --real-llm + LM Studio running)
+# ---------------------------------------------------------------------------
+
+TEST_100_PATH = Path(__file__).parent.parent / "data" / "test_100_autodetect.xlsx"
+
+
+@pytest.mark.real_llm
+def test_100_anomalies_real_llm_metrics(request: pytest.FixtureRequest) -> None:
+    """
+    Run the full pipeline against data/test_100_autodetect.xlsx with a live LLM.
+
+    Acceptance criteria (from CLAUDE.md):
+      precision          >= 0.85
+      hallucination_rate <= 0.05
+
+    Run with:
+      uv run pytest tests/test_integration_pipeline.py::test_100_anomalies_real_llm_metrics --real-llm -v -s
+    """
+    if not request.config.getoption("--real-llm"):
+        pytest.skip("Pass --real-llm to run real LLM tests")
+
+    if not TEST_100_PATH.exists():
+        pytest.skip(f"Test file not found: {TEST_100_PATH}")
+
+    result = run_pipeline(str(TEST_100_PATH), "job_category")
+
+    total_attempted = result.audit.corrected_count + result.audit.hallucination_count
+    hallucination_rate = (
+        result.audit.hallucination_count / total_attempted if total_attempted > 0 else 0.0
+    )
+
+    # Print breakdown so the run is auditable even when the test passes
+    print(f"\n--- 100-row real LLM metrics ---")
+    print(f"  Total rows        : {result.ingest.total_rows}")
+    print(f"  Unique categories : {len(result.ingest.raw_categories)}")
+    print(f"  Anomalies flagged : {result.validator.anomaly_count}")
+    print(f"  Already valid     : {result.validator.valid_count}")
+    print(f"  Corrected         : {result.audit.corrected_count}")
+    print(f"  Review queue      : {result.audit.review_queue_count}")
+    print(f"  Hallucinations    : {result.audit.hallucination_count}")
+    precision_str = f"{result.audit.precision:.2%}" if result.audit.precision is not None else "N/A"
+    print(f"  Precision         : {precision_str}")
+    print(f"  Hallucination rate: {hallucination_rate:.2%}")
+    print(f"  Output file       : {result.audit.output_path}")
+
+    # Structural invariant: no hallucinated title anywhere in decisions
+    for d in result.mapper.decisions:
+        if d.corrected is not None:
+            assert d.corrected in VALID_CATEGORIES_SET, (
+                f"Hallucination: '{d.original}' -> '{d.corrected}' is not in O*NET"
+            )
+
+    if total_attempted > 0:
+        assert result.audit.precision >= PRECISION_THRESHOLD, (
+            f"Precision {result.audit.precision:.2%} below threshold {PRECISION_THRESHOLD:.0%}"
+        )
+
+    assert hallucination_rate <= HALLUCINATION_RATE_THRESHOLD, (
+        f"Hallucination rate {hallucination_rate:.2%} exceeds threshold {HALLUCINATION_RATE_THRESHOLD:.0%}"
+    )

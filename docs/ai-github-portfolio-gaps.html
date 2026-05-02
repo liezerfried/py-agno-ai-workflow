@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI × GitHub — Gaps de Portfolio · Luciano Fried</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-2: #21262d;
+      --border: #30363d;
+      --accent: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-orange: #d29922;
+      --accent-red: #f85149;
+      --accent-purple: #bc8cff;
+      --accent-teal: #39d353;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --text-strong: #f0f6fc;
+      --tag-bg: #1f3a5f;
+      --tag-text: #58a6ff;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Layout ── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 40px 24px 80px; }
+
+    /* ── Header ── */
+    .header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 32px;
+      margin-bottom: 40px;
+    }
+    .header-eyebrow {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text-strong);
+      margin-bottom: 8px;
+    }
+    .header h1 span { color: var(--accent); }
+    .header-sub {
+      color: var(--text-muted);
+      font-size: 14px;
+      max-width: 680px;
+    }
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .badge .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-green { background: var(--accent-green); }
+    .dot-yellow { background: var(--accent-orange); }
+    .dot-red { background: var(--accent-red); }
+    .dot-blue { background: var(--accent); }
+
+    /* ── Section ── */
+    .section { margin-bottom: 48px; }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-icon {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+    .icon-blue { background: rgba(88,166,255,0.15); }
+    .icon-green { background: rgba(63,185,80,0.15); }
+    .icon-orange { background: rgba(210,153,34,0.15); }
+    .icon-purple { background: rgba(188,140,255,0.15); }
+    .icon-red { background: rgba(248,81,73,0.15); }
+    .section-title { font-size: 18px; font-weight: 600; color: var(--text-strong); }
+    .section-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+    /* ── Cards grid ── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      position: relative;
+      transition: border-color 0.15s;
+    }
+    .card:hover { border-color: var(--accent); }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .card-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-strong);
+    }
+    .card-name a { color: var(--text-strong); }
+    .card-name a:hover { color: var(--accent); }
+
+    .pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      white-space: nowrap;
+    }
+    .pill-missing { background: rgba(248,81,73,0.15); color: var(--accent-red); border: 1px solid rgba(248,81,73,0.3); }
+    .pill-partial { background: rgba(210,153,34,0.15); color: var(--accent-orange); border: 1px solid rgba(210,153,34,0.3); }
+    .pill-using  { background: rgba(63,185,80,0.15); color: var(--accent-green); border: 1px solid rgba(63,185,80,0.3); }
+    .pill-optional { background: rgba(88,166,255,0.1); color: var(--text-muted); border: 1px solid var(--border); }
+
+    .card-desc { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; }
+
+    .card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .tag {
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 6px;
+    }
+    .tag-green { background: rgba(63,185,80,0.1); color: var(--accent-green); }
+    .tag-orange { background: rgba(210,153,34,0.1); color: var(--accent-orange); }
+    .tag-purple { background: rgba(188,140,255,0.1); color: var(--accent-purple); }
+    .tag-neutral { background: var(--surface-2); color: var(--text-muted); }
+
+    .card-action {
+      font-size: 12px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      margin-top: 4px;
+    }
+    .card-action strong { color: var(--text); }
+
+    /* ── Impact matrix ── */
+    .matrix {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .matrix table { width: 100%; border-collapse: collapse; }
+    .matrix th {
+      background: var(--surface-2);
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .matrix td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    .matrix tr:last-child td { border-bottom: none; }
+    .matrix tr:hover td { background: var(--surface-2); }
+    .matrix .tool-name { font-weight: 600; color: var(--text-strong); }
+    .matrix .effort-low { color: var(--accent-green); }
+    .matrix .effort-med { color: var(--accent-orange); }
+    .matrix .effort-high { color: var(--accent-red); }
+
+    /* ── Impact stars ── */
+    .stars { color: var(--accent-orange); letter-spacing: 2px; }
+
+    /* ── Callout ── */
+    .callout {
+      background: rgba(88,166,255,0.07);
+      border: 1px solid rgba(88,166,255,0.25);
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .callout strong { color: var(--accent); }
+
+    /* ── Footer ── */
+    .footer {
+      border-top: 1px solid var(--border);
+      padding-top: 24px;
+      margin-top: 48px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .footer .sources { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+    .footer a { color: var(--text-muted); }
+    .footer a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ══════════════════ HEADER ══════════════════ -->
+  <div class="header">
+    <div class="header-eyebrow">Análisis · Mayo 2026</div>
+    <h1>AI × GitHub — <span>¿Qué te falta?</span></h1>
+    <p class="header-sub">
+      Revisión de integraciones IA disponibles en GitHub y servicios externos que potencian
+      un portfolio de AI Engineer. Analizado sobre el proyecto
+      <strong>py-agno-ai-workflow</strong> de <strong>@liezerfried</strong>.
+    </p>
+    <div class="badge-row">
+      <span class="badge"><span class="dot dot-green"></span>Usando</span>
+      <span class="badge"><span class="dot dot-yellow"></span>Parcial / Mejorable</span>
+      <span class="badge"><span class="dot dot-red"></span>Falta completamente</span>
+      <span class="badge"><span class="dot dot-blue"></span>Opcional / Nice-to-have</span>
+    </div>
+  </div>
+
+  <!-- ══════════════════ SECCIÓN 1: GitHub Native AI ══════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-blue">🐙</div>
+      <div>
+        <div class="section-title">GitHub — Features IA nativos</div>
+        <div class="section-subtitle">Herramientas que viven dentro de github.com y que cualquier reclutador puede ver directamente en tu repo</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Contexto 2026:</strong> GitHub unificó Copilot, Models y Actions en un único ecosistema AI. El nuevo modelo de billing (desde junio 2026) cobra code reviews como AI Credits + minutos de Actions. Conocer esto diferencia a un AI Engineer de alguien que "usa Copilot".
+    </div>
+
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://github.com/marketplace/models" target="_blank">GitHub Models</a></div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          Marketplace con 100+ LLMs (GPT-4o, Llama 3, Mistral, Phi, Claude) accesibles gratis con tu GitHub PAT,
+          usando el mismo SDK de OpenAI. Playground de comparación incluido.
+        </div>
+        <div class="card-meta">
+          <span class="tag">Free tier</span>
+          <span class="tag">OpenAI SDK compatible</span>
+          <span class="tag">100+ modelos</span>
+        </div>
+        <div class="card-action">
+          <strong>Cómo aplicarlo:</strong> Agregar GitHub Models como tercer provider en
+          <code>infrastructure/llm/provider.py</code>. Muestra que podés benchmarkear modelos
+          sin cambiar una línea del pipeline.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://docs.github.com/en/copilot/using-github-copilot/code-review" target="_blank">Copilot Code Review</a></div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          Copilot revisa automáticamente cada PR que abrís en tu repo y posta comentarios de calidad.
+          Desde junio 2026 consume AI Credits + Actions minutes — lo que significa que está integrado
+          a nivel infraestructura, no es un plugin.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Desde jun 2026: billed</span>
+          <span class="tag">Auto en cada PR</span>
+        </div>
+        <div class="card-action">
+          <strong>Por qué importa:</strong> Cualquier colaborador (o reclutador técnico) ve que
+          tu repo tiene revisión IA activa — es señal de madurez de proceso.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://github.blog/changelog/2026-04-27-github-copilot-code-review-will-start-consuming-github-actions-minutes-on-june-1-2026/" target="_blank">Copilot Coding Agent</a></div>
+          <span class="pill pill-optional">Opcional</span>
+        </div>
+        <div class="card-desc">
+          Agente de Copilot que toma issues de GitHub, abre una rama, escribe código, y crea un PR.
+          Incluye model picker, self-review, security scanning y CLI handoff.
+          "GitHub Agentic Workflows" está en technical preview.
+        </div>
+        <div class="card-meta">
+          <span class="tag">Technical preview</span>
+          <span class="tag-purple tag">Copilot Pro+</span>
+        </div>
+        <div class="card-action">
+          <strong>Oportunidad portfolio:</strong> Documentar en el README que tu proyecto tiene
+          issues bien definidos para que el Coding Agent pueda procesarlos es un diferenciador.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://docs.github.com/en/actions" target="_blank">GitHub Actions + AI</a></div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          No hay ningún workflow <code>.github/workflows/</code> en el repo. Cero CI/CD.
+          El standard 2026 para un proyecto Python es: lint (ruff) + type check (mypy) + tests (pytest)
+          corriendo automáticamente en cada push y PR.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Crítico para portfolio</span>
+          <span class="tag">Free en repos públicos</span>
+        </div>
+        <div class="card-action">
+          <strong>Impacto inmediato:</strong> Un badge "CI passing" en el README es lo primero
+          que mira un tech lead antes de leer una línea de código.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">Dependabot + Security Alerts</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          GitHub puede escanear automáticamente tus dependencias (<code>uv.lock</code>)
+          y abrirte PRs cuando aparecen CVEs. Gratis, cero configuración más allá de activarlo
+          en Settings → Security.
+        </div>
+        <div class="card-meta">
+          <span class="tag-green tag">Gratis</span>
+          <span class="tag">Cero código</span>
+        </div>
+        <div class="card-action">
+          <strong>Cómo activar:</strong> Settings → Security → Dependabot alerts + Dependabot security updates → Enable.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">GitHub Discussions / Wiki</div>
+          <span class="pill pill-optional">Opcional</span>
+        </div>
+        <div class="card-desc">
+          Tenés 16 archivos de docs pero están en <code>/docs</code> local. Moverlos a GitHub Wiki
+          o activar Discussions permite que la conversación sobre decisiones de arquitectura
+          sea pública y buscable — muestra pensamiento de product engineer.
+        </div>
+        <div class="card-meta">
+          <span class="tag-neutral tag">Nice-to-have</span>
+        </div>
+        <div class="card-action">
+          <strong>Alternativa más rápida:</strong> Publicar el <code>README</code> con un link a
+          cada doc clave en la sección "Architecture Decisions".
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════ SECCIÓN 2: Terceros AI review ══════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-orange">🤖</div>
+      <div>
+        <div class="section-title">AI Code Review — Terceros</div>
+        <div class="section-subtitle">Apps que se instalan en tu GitHub y reviewan PRs automáticamente. Visibles en cada PR del repo.</div>
+      </div>
+    </div>
+
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://coderabbit.ai" target="_blank">CodeRabbit</a></div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          La app de AI code review más instalada en GitHub (2M+ repos, 13M+ PRs procesados).
+          Revisa cada PR con resumen en lenguaje natural, detecta bugs, sugiere mejoras,
+          y soporta configuración via <code>.coderabbit.yaml</code>. Free tier para repos públicos.
+        </div>
+        <div class="card-meta">
+          <span class="tag-green tag">Free para repos públicos</span>
+          <span class="tag">40+ linters integrados</span>
+          <span class="tag">GitHub + GitLab + Bitbucket</span>
+        </div>
+        <div class="card-action">
+          <strong>Setup:</strong> Instalar desde
+          <a href="https://github.com/marketplace/coderabbitai" target="_blank">GitHub Marketplace</a> →
+          agrega <code>.coderabbit.yaml</code> → cada PR recibe un review automático en minutos.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://qodo.ai" target="_blank">Qodo (ex CodiumAI)</a></div>
+          <span class="pill pill-optional">Opcional</span>
+        </div>
+        <div class="card-desc">
+          Alternativa a CodeRabbit. Genera tests automáticamente a partir de tu código,
+          y revisa PRs. $30/user/mes en paid, pero tiene plan free.
+          Fuerte en generación de tests — relevante dado que ya tenés un suite de pytest.
+        </div>
+        <div class="card-meta">
+          <span class="tag">Test generation</span>
+          <span class="tag-orange tag">$30/user/mes (paid)</span>
+        </div>
+        <div class="card-action">
+          <strong>Recomendación:</strong> Empezar con CodeRabbit (gratis, más adoptado).
+          Qodo vale si querés explorar generación de tests automáticos para el pipeline.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════ SECCIÓN 3: Observabilidad ══════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-purple">📊</div>
+      <div>
+        <div class="section-title">LLM Observability</div>
+        <div class="section-subtitle">Trazabilidad de llamadas al LLM, latencia, tokens, evals. La diferencia entre "un script que llama a una API" y "un sistema de producción".</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Estado actual:</strong> El proyecto usa Agno traces + openinference-instrumentation-agno.
+      Eso es correcto y coherente con el stack. El gap es que no hay ninguna evidencia
+      <em>visible en el repo</em> de que la observabilidad está activa y funcionando.
+    </div>
+
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://agno.com" target="_blank">Agno Traces (app.agno.com)</a></div>
+          <span class="pill pill-partial">Parcial</span>
+        </div>
+        <div class="card-desc">
+          Ya tenés <code>openinference-instrumentation-agno</code> como dependencia y
+          <code>AGNO_API_KEY</code> en el <code>.env.example</code>.
+          Falta: un screenshot del dashboard en el README y documentar en el repo
+          que el sistema está instrumentado.
+        </div>
+        <div class="card-meta">
+          <span class="tag-green tag">Ya instalado</span>
+          <span class="tag-orange tag">No documentado en README</span>
+        </div>
+        <div class="card-action">
+          <strong>Quick win:</strong> Agregar una sección "Observability" en el README con
+          un screenshot del trace de una corrección real. Proof > claims.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://langfuse.com" target="_blank">Langfuse</a></div>
+          <span class="pill pill-optional">Alternativa</span>
+        </div>
+        <div class="card-desc">
+          El estándar open-source de observabilidad LLM en 2026 (2300+ empresas, 19K stars).
+          MIT license, self-hosteable. Cubre tracing, prompt versioning, evaluaciones LLM-as-judge,
+          y métricas de producción. Integra con OpenTelemetry — compatible con tu stack.
+        </div>
+        <div class="card-meta">
+          <span class="tag-green tag">MIT / Open source</span>
+          <span class="tag">OpenTelemetry</span>
+          <span class="tag">LLM-as-judge evals</span>
+        </div>
+        <div class="card-action">
+          <strong>Cuándo considerar:</strong> Si en el futuro querés mostrar métricas de evaluación
+          (<code>precision ≥ 0.85</code>, <code>hallucination_rate ≤ 0.05</code>) con evidencia
+          real trazada — Langfuse tiene el dashboard para eso.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">Eval / Golden Dataset visible</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          Tenés <code>tests/fixtures/golden_input.xlsx</code> pero el resultado de la evaluación
+          (<code>precision</code>, <code>hallucination_rate</code>) no se muestra en ningún lado.
+          En 2026, un AI Engineer muestra métricas, no solo código.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Alto impacto portfolio</span>
+          <span class="tag">Diferenciador AI Engineer</span>
+        </div>
+        <div class="card-action">
+          <strong>Implementación:</strong> Agregar un GitHub Actions job que corra el golden dataset
+          y genere un badge o tabla de métricas en el README automáticamente.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════ SECCIÓN 4: CI/CD AI-aware ══════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-green">⚙️</div>
+      <div>
+        <div class="section-title">CI/CD — Lo mínimo que no podés no tener</div>
+        <div class="section-subtitle">No hay un solo archivo en .github/. Esto es el gap más grande y el más fácil de cerrar.</div>
+      </div>
+    </div>
+
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">ci.yml — Lint + Type + Test</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          El workflow básico: correr <code>ruff check</code>, <code>mypy</code> y
+          <code>pytest</code> en cada push y PR. Gratis en repos públicos.
+          Sin esto, los 8 módulos de tests que escribiste no corren automáticamente en ningún lado.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Crítico</span>
+          <span class="tag-green tag">~30 líneas de YAML</span>
+          <span class="tag">Free en repos públicos</span>
+        </div>
+        <div class="card-action">
+          <strong>Stack mínimo:</strong> <code>uv sync</code> → <code>ruff check .</code> →
+          <code>mypy agents/ infrastructure/ domain/ workflows/</code> → <code>pytest tests/ -x</code>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">coverage.yml — Badge de cobertura</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          Agregar <code>pytest-cov</code> al pipeline y publicar el resultado como badge en el README.
+          Un badge <code>coverage: 87%</code> en el repo dice más que cualquier descripción
+          de "tengo tests de integración".
+        </div>
+        <div class="card-meta">
+          <span class="tag">pytest-cov</span>
+          <span class="tag">Codecov.io (free)</span>
+        </div>
+        <div class="card-action">
+          <strong>Setup:</strong> <code>uv add --dev pytest-cov</code> +
+          registrar repo en <a href="https://codecov.io" target="_blank">codecov.io</a> → badge automático.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">pre-commit hooks</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          Tenés ruff configurado en <code>pyproject.toml</code> pero sin
+          <code>.pre-commit-config.yaml</code> nadie lo corre antes de hacer commit.
+          Garantiza que el código que llega al repo siempre pasa el linter.
+        </div>
+        <div class="card-meta">
+          <span class="tag">ruff check</span>
+          <span class="tag">ruff format</span>
+          <span class="tag-orange tag">mypy (si sumás type check)</span>
+        </div>
+        <div class="card-action">
+          <strong>Setup:</strong> Podés usar el skill <code>/setup-pre-commit</code>
+          disponible en Claude Code para configurarlo automáticamente.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">Dockerfile + docker-compose</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          El proyecto arranca con <code>uv run chainlit run app.py</code>. No hay historia de
+          deployment. Para un proyecto de AI pipeline, Docker es el mínimo para demostrar
+          que sabés llevar esto a producción real.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Medio impacto</span>
+          <span class="tag">python:3.12-slim</span>
+          <span class="tag">uv compatible</span>
+        </div>
+        <div class="card-action">
+          <strong>Mínimo:</strong> <code>Dockerfile</code> con <code>python:3.12-slim</code> +
+          <code>docker-compose.yml</code> con las env vars documentadas.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════ SECCIÓN 5: Otros servicios ══════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-red">🌐</div>
+      <div>
+        <div class="section-title">Otros servicios que suman al portfolio</div>
+        <div class="section-subtitle">Fuera de GitHub, pero linkeable desde el README o perfil</div>
+      </div>
+    </div>
+
+    <div class="cards">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://agno.com" target="_blank">app.agno.com — Dashboard público</a></div>
+          <span class="pill pill-partial">Parcial</span>
+        </div>
+        <div class="card-desc">
+          Agno tiene un dashboard de traces en <code>app.agno.com</code> que muestra
+          las ejecuciones del workflow. Si activás el <code>AGNO_API_KEY</code>,
+          podés linkearlo desde tu README como evidencia de que el sistema corre en producción.
+        </div>
+        <div class="card-meta">
+          <span class="tag-green tag">Ya tienes la lib</span>
+          <span class="tag">Solo falta el AGNO_API_KEY</span>
+        </div>
+        <div class="card-action">
+          <strong>Impacto:</strong> "Ver traces en vivo → app.agno.com/..." en el README
+          es evidencia concreta de que es un sistema real, no un script.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name"><a href="https://huggingface.co/spaces" target="_blank">HuggingFace Spaces — Demo pública</a></div>
+          <span class="pill pill-optional">Opcional</span>
+        </div>
+        <div class="card-desc">
+          HuggingFace Spaces permite hostear demos de AI gratis. Subir una versión simplificada
+          del pipeline con un input de ejemplo hace que cualquier persona pueda probarlo
+          sin clonar el repo — enorme diferenciador en portfolio.
+        </div>
+        <div class="card-meta">
+          <span class="tag-green tag">Free tier</span>
+          <span class="tag">Chainlit compatible</span>
+          <span class="tag">Link directo en README</span>
+        </div>
+        <div class="card-action">
+          <strong>Alternativa más simple:</strong> Railway o Render — ambos tienen free tier
+          y deploy directo desde GitHub.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">LICENSE — MIT</div>
+          <span class="pill pill-missing">Falta</span>
+        </div>
+        <div class="card-desc">
+          El repo no tiene ninguna licencia. Sin licencia, técnicamente nadie puede reusar,
+          forkar ni contribuir al código legalmente. 30 segundos para agregar un MIT.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Crítico si es open source</span>
+          <span class="tag-green tag">GitHub lo genera automáticamente</span>
+        </div>
+        <div class="card-action">
+          <strong>Setup:</strong> GitHub → repo → Add file → Create new file →
+          escribir <code>LICENSE</code> → GitHub sugiere templates → elegir MIT.
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-name">README — Badges + Demo GIF</div>
+          <span class="pill pill-partial">Mejorable</span>
+        </div>
+        <div class="card-desc">
+          El README tiene buena información arquitectónica pero le faltan badges de estado
+          (CI, coverage, licencia) y un GIF o screenshot de la UI de Chainlit funcionando.
+          El primer scroll de un visitante determina si sigue leyendo.
+        </div>
+        <div class="card-meta">
+          <span class="tag-orange tag">Alto impacto visual</span>
+          <span class="tag">shields.io para badges</span>
+        </div>
+        <div class="card-action">
+          <strong>Mínimo a agregar:</strong> Badge CI · Badge Coverage · Badge License ·
+          1 screenshot o GIF de la UI de Chainlit en acción.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════ MATRIZ DE PRIORIDAD ══════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-blue">🎯</div>
+      <div>
+        <div class="section-title">Matriz de prioridad</div>
+        <div class="section-subtitle">Ordenado por impacto en portfolio de AI Engineer vs esfuerzo de implementación</div>
+      </div>
+    </div>
+
+    <div class="matrix">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Herramienta</th>
+            <th>Estado</th>
+            <th>Esfuerzo</th>
+            <th>Impacto portfolio</th>
+            <th>Categoría</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td class="tool-name">GitHub Actions CI (lint + test)</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-low">Bajo (~30 líneas YAML)</td>
+            <td><span class="stars">★★★★★</span></td>
+            <td><span class="tag-orange tag">Crítico</span></td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td class="tool-name">CodeRabbit (AI PR review)</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-low">Bajo (instalar app)</td>
+            <td><span class="stars">★★★★★</span></td>
+            <td><span class="tag-orange tag">Crítico</span></td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td class="tool-name">pytest-cov + Badge coverage</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-low">Bajo</td>
+            <td><span class="stars">★★★★☆</span></td>
+            <td><span class="tag tag">Alta prioridad</span></td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td class="tool-name">LICENSE (MIT)</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-low">Mínimo (30 seg)</td>
+            <td><span class="stars">★★★★☆</span></td>
+            <td><span class="tag-orange tag">Necesario</span></td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td class="tool-name">Agno traces documentados en README</td>
+            <td><span class="pill pill-partial">Parcial</span></td>
+            <td class="effort-low">Bajo (screenshot)</td>
+            <td><span class="stars">★★★★☆</span></td>
+            <td><span class="tag tag">Alta prioridad</span></td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td class="tool-name">GitHub Models como provider</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-med">Medio</td>
+            <td><span class="stars">★★★★☆</span></td>
+            <td><span class="tag tag">AI Engineer signal</span></td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td class="tool-name">Dependabot alerts</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-low">Mínimo (settings)</td>
+            <td><span class="stars">★★★☆☆</span></td>
+            <td><span class="tag-neutral tag">Buena práctica</span></td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td class="tool-name">pre-commit hooks</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-low">Bajo</td>
+            <td><span class="stars">★★★☆☆</span></td>
+            <td><span class="tag-neutral tag">Proceso</span></td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td class="tool-name">README badges + Demo GIF</td>
+            <td><span class="pill pill-partial">Mejorable</span></td>
+            <td class="effort-low">Bajo</td>
+            <td><span class="stars">★★★☆☆</span></td>
+            <td><span class="tag-neutral tag">Presentación</span></td>
+          </tr>
+          <tr>
+            <td>10</td>
+            <td class="tool-name">Dockerfile + docker-compose</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-med">Medio</td>
+            <td><span class="stars">★★★☆☆</span></td>
+            <td><span class="tag-neutral tag">Deployment</span></td>
+          </tr>
+          <tr>
+            <td>11</td>
+            <td class="tool-name">HuggingFace Spaces / Railway deploy</td>
+            <td><span class="pill pill-missing">Falta</span></td>
+            <td class="effort-med">Medio-alto</td>
+            <td><span class="stars">★★★★★</span></td>
+            <td><span class="tag-purple tag">Demo viva</span></td>
+          </tr>
+          <tr>
+            <td>12</td>
+            <td class="tool-name">Langfuse (si escalás evaluaciones)</td>
+            <td><span class="pill pill-optional">Opcional</span></td>
+            <td class="effort-high">Alto</td>
+            <td><span class="stars">★★★★☆</span></td>
+            <td><span class="tag-neutral tag">Futuro</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ══════════════════ FOOTER / SOURCES ══════════════════ -->
+  <div class="footer">
+    <strong>Fuentes consultadas — Mayo 2026</strong>
+    <div class="sources">
+      <a href="https://docs.github.com/en/copilot/get-started/features" target="_blank">GitHub Copilot features — GitHub Docs</a>
+      <a href="https://github.blog/changelog/2026-04-27-github-copilot-code-review-will-start-consuming-github-actions-minutes-on-june-1-2026/" target="_blank">Copilot Code Review billing change — GitHub Changelog (abril 2026)</a>
+      <a href="https://docs.github.com/en/github-models/use-github-models/prototyping-with-ai-models" target="_blank">GitHub Models — Prototyping with AI models — GitHub Docs</a>
+      <a href="https://docs.coderabbit.ai/" target="_blank">CodeRabbit Documentation</a>
+      <a href="https://dev.to/heraldofsolace/the-best-ai-code-review-tools-of-2026-2mb3" target="_blank">The Best AI Code Review Tools of 2026 — DEV Community</a>
+      <a href="https://dev.to/rahulxsingh/qodo-vs-coderabbit-ai-code-review-tools-compared-2026-kdp" target="_blank">Qodo vs CodeRabbit: AI Code Review Tools Compared 2026 — DEV Community</a>
+      <a href="https://langfuse.com/docs/observability/overview" target="_blank">Langfuse — LLM Observability Overview</a>
+      <a href="https://www.confident-ai.com/knowledge-base/compare/top-7-llm-observability-tools" target="_blank">Top 7 LLM Observability Tools in 2026 — Confident AI</a>
+      <a href="https://pratikpathak.com/top-ai-llm-projects-with-source-code-github/" target="_blank">Top 15+ AI & LLM Projects to Build Your Portfolio in 2026</a>
+      <a href="https://www.flowdevs.io/blog/post/understanding-githubs-april-2026-copilot-changes-for-individual-developers" target="_blank">Understanding GitHub's April 2026 Copilot Changes — Flowdevs</a>
+    </div>
+    <div style="margin-top: 16px; color: var(--text-muted);">
+      Generado para <strong style="color: var(--text);">@liezerfried</strong> · Proyecto py-agno-ai-workflow ·
+      Análisis basado en búsqueda web en vivo + exploración del repo · Mayo 2026
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
