@@ -1,4 +1,4 @@
-# Orquestación, Diseño del Proyecto y Módulos de Agno
+# Orquestación y Diseño del Proyecto
 
 ---
 
@@ -8,415 +8,168 @@ Orquestación es el mecanismo que define **cómo y en qué orden trabajan los ag
 Un agente solo no alcanza para tareas complejas: necesitás coordinar varios, definir
 quién hace qué, y cómo fluye la información entre ellos.
 
-### LangChain / LangGraph vs Agno
+### LangGraph vs Agno
 
-Probablemente escuchaste mencionar LangChain, LangSmith y LangGraph. Son tres herramientas
-distintas del mismo ecosistema:
+| | LangGraph | Agno |
+|---|---|---|
+| Modelo mental | Grafo dirigido (nodos + aristas) | Workflow lineal (Steps en orden) o Team (routing dinámico) |
+| Bueno para | Flujos condicionales complejos, ciclos | Pipelines predecibles, APIs REST, UI en tiempo real |
+| Observabilidad | LangSmith (externo) | Agno traces (integrado, `os.agno.com`) |
 
-| Herramienta | Qué es |
-|-------------|--------|
-| **LangChain** | Framework base para construir con LLMs (cadenas, prompts, tools) |
-| **LangSmith** | Plataforma de observabilidad — ver trazas, evaluar, debuggear |
-| **LangGraph** | Orquestador de agentes usando el concepto de **grafo** (nodos + aristas) |
-
-LangGraph modela la orquestación como un diagrama de flujo: cada agente es un nodo y las
-conexiones son aristas con condiciones. Es poderoso, pero requiere pensar en grafos
-dirigidos, estados y ciclos.
-
-**Agno toma otro camino.** En vez de grafos, expone abstracciones más directas y predecibles:
-
-| Agno | Equivalente conceptual |
-|------|----------------------|
-| `Workflow` + `Step` | Flujo lineal predecible, como una receta de pasos |
-| `Team` | Colaboración dinámica entre agentes especializados |
-| `Agent` individual | Nodo simple con tools propias |
-
-No es mejor ni peor que LangGraph — es más Pythónico y más directo. Para flujos claros y
-predecibles, como este proyecto, es la elección correcta.
+**Este proyecto usa Agno Workflow** — el flujo es lineal y determinista (Ingest → Validate → Map → Audit). No hay decisión dinámica sobre qué agente llamar ni ciclos de retroalimentación.
 
 ---
 
-## 2. Proyecto 1 vs Proyecto 2: qué cambia
-
-### Proyecto 1 — Multi-Agent Research System (Mastra, TypeScript)
+## 2. Los 4 agentes: responsabilidades
 
 ```
-Input: "Investigar tema X"
+Excel del usuario
     ↓
-ResearcherAgent → busca fuentes en la web
+[1] IngestAgent         Lee el archivo, extrae categorías únicas
     ↓
-AnalystAgent → analiza y estructura hallazgos
+[2] ValidatorAgent      Compara contra O*NET, detecta anomalías
     ↓
-WriterAgent → genera reporte final en markdown
+[3] MapperAgent         Corrige anomalías — rapidfuzz + LLM + review queue
     ↓
-Output: reporte.md
+[4] AuditWriter         Escribe Excel corregido + audit log + review queue sheet
+    ↓
+Excel limpio
 ```
 
-- **Framework:** Mastra (TypeScript)
-- **Tipo de problema:** síntesis de información no estructurada
-- **Lo que muestra al recruiter:** multi-agent, workflow, web search, output estructurado
+| Agente | Tipo real | Usa LLM | Responsabilidad única |
+|--------|-----------|---------|----------------------|
+| `IngestAgent` | Python (openpyxl) wrapped in `Step` | No | Leer Excel, extraer categorías únicas |
+| `ValidatorAgent` | Python (rapidfuzz) wrapped in `Step` | No | Comparar contra O*NET, identificar anomalías |
+| `MapperAgent` | Agno `Agent` con `output_schema=SemanticMatch` | Sí — solo banda 0.70–0.89 | Proponer correcciones con confianza escalonada |
+| `AuditWriter` | Python (openpyxl) wrapped in `Step` | No | Generar Excel corregido + reporte |
+
+`TranslatorAgent` es un sub-agente interno de `MapperAgent` — no es un Step del pipeline.
+Se llama cuando un título score < 0.70, intenta normalizarlo (traducción/abreviatura), y
+re-scorea. Si el score sube, sigue; si no, va a review queue.
 
 ---
 
-### Proyecto 2 — Smart Data Normalization Agent (Agno, Python)
+## 3. Sistema de confianza escalonada
 
 ```
-Input: archivo Excel con categorías potencialmente erróneas
-    ↓
-IngestAgent → extrae categorías únicas de la columna target
-    ↓
-ValidatorAgent → compara contra base de datos de categorías válidas
-    ↓
-MapperAgent → detecta errores y propone correcciones
-    ↓
-AuditWriter → aplica cambios, genera Excel corregido + reporte
-    ↓
-Output: Excel limpio + audit trail de cada corrección
-```
+pre_processor → normaliza texto (casing, seniority, ruido) — sin LLM, sin costo
 
-- **Framework:** Agno (Python)
-- **Tipo de problema:** calidad de datos empresarial (data quality / ETL con LLM)
-- **Lo que muestra al recruiter:** datos reales, confianza escalonada, evaluation layer, deploy
-
-**La diferencia clave:** el proyecto 1 trabaja con texto libre. El proyecto 2 trabaja con datos
-estructurados que tienen un formato esperado y un resultado verificable — podés medir
-objetivamente si el agente se equivocó. Eso lo hace más enterprise y más evaluable.
-
----
-
-## 3. Qué hace exactamente el proyecto actual
-
-**El problema:** los sistemas esperan categorías con nombres exactos. Cuando un usuario carga
-un Excel con errores de tipeo o categorías en otro idioma, el sistema rechaza el archivo
-o lo procesa mal.
-
-**Ejemplos concretos del problema:**
-
-| Lo que el usuario cargó | Lo que el sistema espera | Error |
-|------------------------|--------------------------|-------|
-| `prodctos` | `productos` | typo |
-| `Electrónica` | `electronics` | idioma incorrecto |
-| `Ropa de Invierno` | `winter_clothing` | formato distinto |
-| `celulares` | `mobile_phones` | sinónimo |
-
-El agente recibe el Excel, detecta estos casos, propone la corrección y genera un archivo
-limpio. Para cada corrección registra: qué cambió, cuánta confianza tuvo, y qué método usó
-(matching automático, LLM, o intervención humana).
-
-**El sistema de confianza escalonada:**
-
-```
-rapidfuzz compara texto plano:
-    score ≥ 0.90  → corrección automática sin preguntar
-    score 0.70–0.89 → LLM evalúa equivalencia semántica
-
-LLM evalúa semántica (sinónimos, idiomas, variantes):
-    modelo decide si hay equivalencia semántica
-
-    score < 0.70 → human-in-the-loop: pausa y espera confirmación
+rapidfuzz compara texto contra O*NET:
+    score ≥ 0.90   →  corrección automática (sin LLM, cero tokens)
+    score 0.70–0.89 →  MapperAgent LLM evalúa equivalencia semántica
+    score < 0.70   →  TranslatorAgent intenta normalizar, re-scorea
+                       si sigue < 0.70 → needs_review=True, human-in-the-loop
 ```
 
 `rapidfuzz` maneja typos de forma instantánea y sin consumir tokens. El LLM entra solo
-cuando hay ambigüedad semántica — sinónimos, cambios de idioma, abreviaturas. Esto reduce
-costos y latencia en datasets grandes.
+cuando hay ambigüedad semántica — sinónimos, cambios de idioma, abreviaturas.
+Esto reduce costos y latencia en datasets grandes.
 
 ---
 
-## 4. Módulos de Agno: qué hace cada uno
+## 4. Módulos de Agno usados en este proyecto
 
 ### Agent
 
-La unidad base. Combina modelo de lenguaje, tools e instrucciones. Razona en un loop:
-recibe input → decide qué tool llamar → ejecuta → vuelve a razonar.
+La unidad base. Combina modelo de lenguaje, instrucciones y `output_schema`. En este proyecto
+`MapperAgent` y `TranslatorAgent` son `Agent` reales con Pydantic schema de salida.
 
 ```python
 from agno.agent import Agent
 agent = Agent(
-    name="ValidatorAgent",
-    model=model,
-    tools=[CategoryDBTools()],
-    instructions="Comparás categorías del Excel contra la base de datos válida.",
+    name="MapperAgent",
+    model=get_model(),
+    output_schema=SemanticMatch,
+    instructions=["..."],
 )
 ```
 
----
+### Workflow + Step
 
-### Team
-
-Grupo de agentes especializados con un líder que delega en tiempo real. El líder decide
-qué agente es el más adecuado para cada tarea.
-
-Tres modos:
-- `route` — el líder enruta cada tarea al agente más adecuado
-- `broadcast` — todos los agentes reciben la tarea simultáneamente
-- `coordinate` — orquestación colaborativa general (default)
-
-**Para este proyecto no usamos Team** — el flujo es secuencial y predecible. No necesitamos
-que nadie decida dinámicamente quién hace qué.
-
----
-
-### Workflow + Step + Steps
-
-Orquesta agentes en pasos con orden definido. El output de cada `Step` alimenta el input
-del siguiente. Genera audit trail automático por paso.
+Orquesta los pasos con orden fijo. El `StepOutput.content` de cada Step es un JSON string
+que alimenta el `StepInput` del siguiente.
 
 ```python
-from agno.workflow.step import Step
-from agno.workflow.steps import Steps
-from agno.workflow.workflow import Workflow
+from agno.workflow import Step, StepInput, StepOutput
 
-ingest_step = Step(name="ingest", agent=ingest_agent)
-validate_step = Step(name="validate", agent=validator_agent)
-map_step = Step(name="map", agent=mapper_agent)
-audit_step = Step(name="audit", agent=audit_writer)
-
-normalization_sequence = Steps(
-    name="normalization",
-    steps=[ingest_step, validate_step, map_step, audit_step],
-)
-
-workflow = Workflow(
-    name="Data Normalization Workflow",
-    steps=[normalization_sequence],
-)
+ingest_step    = Step(name="IngestAgent",    executor=ingest_executor)
+validate_step  = Step(name="ValidatorAgent", executor=validator_executor)
+map_step       = Step(name="MapperAgent",    executor=mapper_executor)
+audit_step     = Step(name="AuditWriter",    executor=audit_executor)
 ```
 
----
+Los ejecutores son funciones Python (`executor=`) que reciben `StepInput` y devuelven `StepOutput`,
+lo que permite testearlos en aislamiento sin instanciar el Workflow completo.
 
-### Tools / Toolkit
+### ¿Por qué Workflow y no Team?
 
-Las capacidades concretas que puede ejecutar un agente. Agno incluye más de 100 toolkits
-nativos — verificá siempre si lo que necesitás ya existe antes de construir uno custom
-(ver lista completa en `01-agno-core-concepts.md`).
-
-Para este proyecto todos los toolkits son nativos:
-- `CsvTools` — leer y escribir archivos CSV (ingest y output)
-- `DuckDbTools` — ejecutar SQL sobre el CSV de categorías válidas
-- `output_schema` con Pydantic — el LLM matchea semánticamente y retorna JSON validado
-
----
-
-### Memory
-
-Historial de conversación dentro de una sesión. Con `add_history_to_context=True` el agente
-recuerda lo que dijo antes. Útil para chatbots multi-turno. Para este proyecto no es crítico
-— cada run procesa un Excel nuevo.
-
----
-
-### Knowledge (RAG)
-
-Base de conocimiento vectorial. Cargás documentos (PDFs, URLs, texto) y el agente busca en
-ellos semánticamente mediante embeddings + vector database (ChromaDB, LanceDB, etc.).
-
-Para este proyecto la base de categorías válidas es un CSV consultado con SQL — no necesitamos
-RAG. RAG aplica cuando el contenido es no estructurado y extenso.
-
----
-
-### Storage / db
-
-Persistencia de sesiones y estado entre runs. Con `SqliteDb` o `PostgreSQL` el agente guarda
-historial de conversaciones, métricas y resultados de evaluaciones.
-
-```python
-from agno.db.sqlite import SqliteDb
-db = SqliteDb(db_file="tmp/agents.db")
-agent = Agent(model=model, db=db)
-```
-
----
-
-### AgentOS
-
-Runtime de producción que convierte tus agentes en una API FastAPI + interfaz web.
-Es el equivalente a Mastra Studio en el ecosistema Agno.
-
-```python
-from agno.os import AgentOS
-from agno.os.interfaces.agui import AGUI
-
-agent_os = AgentOS(
-    agents=[mi_agente],
-    interfaces=[AGUI(agent=mi_agente)],
-)
-app = agent_os.get_app()
-
-if __name__ == "__main__":
-    agent_os.serve(app="playground:app", reload=True, port=9001)
-```
-
-Levantás esto con `python playground.py` y obtenés una UI de chat en `http://localhost:9001`
-con tool calls en tiempo real y métricas de tokens.
-
----
-
-### AGUI
-
-La interfaz web que expone AgentOS. Permite:
-- Chatear con el agente directamente
-- Ver qué tools llamó y con qué argumentos
-- Revisar si las respuestas son coherentes
-- Ver métricas de tokens y latencia
-
----
-
-### Evaluaciones (AccuracyEval)
-
-Sistema de evaluación para medir objetivamente si el agente responde bien. Podés crear un
-dataset de 20–30 casos conocidos (input con error → output esperado) y medir precision/recall:
-
-```python
-from agno.eval.accuracy import AccuracyEval
-
-evaluation = AccuracyEval(
-    db=db,
-    name="Normalization Accuracy",
-    model=model,
-    input="productos, electrónica, ropa invierno",
-    expected_output="products, electronics, winter_clothing",
-    agent=normalization_agent,
-)
-evaluation.run(print_results=True)
-```
-
----
-
-## 5. Arquitectura del proyecto: decisiones de diseño
-
-### ¿Cuántos agentes?
-
-**4 agentes especializados**, uno por responsabilidad:
-
-| Agente | Responsabilidad única |
-|--------|----------------------|
-| `IngestAgent` | Leer el Excel y extraer categorías únicas — no hace nada más |
-| `ValidatorAgent` | Comparar contra DB de válidas e identificar anomalías |
-| `MapperAgent` | Proponer correcciones (rapidfuzz + LLM + human-loop) |
-| `AuditWriter` | Generar el Excel corregido y el reporte de cambios |
-
-Responsabilidades únicas tienen ventajas concretas: si `ValidatorAgent` falla, sabés
-exactamente dónde está el error. Podés reemplazar un agente sin tocar los demás, y las
-métricas de cada paso son independientes.
-
----
-
-### ¿Workflow o Team?
-
-**Workflow.** El flujo siempre es: ingest → validate → map → audit. No hay decisión
-dinámica sobre qué agente llamar.
-
-| Criterio | Workflow | Team |
-|----------|----------|------|
+| Criterio | Workflow (elegido) | Team |
+|----------|--------------------|------|
 | Orden de los pasos | Fijo y predecible | Dinámico |
 | El output de A alimenta a B | Sí, siempre | No necesariamente |
-| Necesitamos audit trail por paso | Sí | No nativo |
-| El flujo puede cambiar en runtime | No | Sí |
+| Audit trail por paso | Sí, nativo | No nativo |
+| Necesitamos routing dinámico | No | Sí |
+
+### Memory y Knowledge — por qué no aplican
+
+- **Memory:** existe para chats multi-turno. Este pipeline es stateless — recibe un Excel, lo procesa, devuelve otro Excel. Cada ejecución es independiente.
+- **Knowledge (RAG):** aplica cuando el contenido es no estructurado y extenso. Aquí la referencia es `valid_categories.csv` — 923 títulos exactos consultados con búsqueda exacta + rapidfuzz, más rápido y más auditable que embeddings.
+
+### Storage / AgentOS
+
+El proyecto usa `agno.db.sqlite.SqliteDb` para tracing (`tmp/traces.db`).
+`agent_os.py` expone el pipeline como API REST via `AgentOS`.
 
 ---
 
-### ¿Qué tools necesitamos?
+## 5. Decisiones de arquitectura
 
-Todos los toolkits son nativos de Agno — no hay nada custom que construir:
+### Responsabilidades únicas
 
-| Agente | Toolkit nativo | Import | Para qué |
-|--------|---------------|--------|----------|
-| `IngestAgent` | `CsvTools` | `agno.tools.csv_toolkit` | Leer CSV/Excel, extraer categorías únicas |
-| `ValidatorAgent` | `DuckDbTools` | `agno.tools.duckdb` | SQL sobre el CSV de categorías válidas |
-| `MapperAgent` | `output_schema` + Pydantic | nativo en `Agent` | El LLM matchea semánticamente y devuelve JSON validado |
-| `AuditWriter` | `CsvTools` (write) | `agno.tools.csv_toolkit` | Escribir el CSV corregido con los cambios |
+Cada agente tiene una sola responsabilidad. Si `ValidatorAgent` falla, sabés exactamente
+dónde está el error. Podés reemplazar un agente sin tocar los demás, y las métricas de
+cada paso son independientes.
 
-**Por qué rapidfuzz como pre-filtro:** antes de gastar tokens del LLM, rapidfuzz compara
-caracteres y detecta typos obvios (score ≥ 0.90) de forma instantánea y sin costo.
+### TranslatorAgent como sub-agente (no Step)
 
-El LLM entra solo cuando rapidfuzz no alcanza — sinónimos, cambios de idioma, abreviaturas.
-El flujo es: rapidfuzz → LLM si score 0.70–0.89 → human-in-the-loop si score < 0.70.
+`TranslatorAgent` podría haberse implementado dentro de `MapperAgent` directamente, pero
+separarlo permite:
+1. Testearlo en aislamiento con `set_agent()` (patrón de inyección)
+2. Reemplazarlo sin tocar `MapperAgent` (por ejemplo, con una API de traducción externa)
 
----
+### Invariante de no alucinación
 
-## 6. Cómo probar el proyecto
+El sistema tiene tres capas para evitar que el LLM invente títulos:
 
-Agno tiene cuatro modos de testing, de más simple a más completo:
+1. **`output_schema` con Pydantic** — Agno valida la respuesta del LLM contra el schema antes
+   de que llegue al código del agente.
+2. **`is_valid_onet_title()` en `MapperAgent`** — antes de aceptar la sugerencia del LLM,
+   verifica que el título exista en `valid_categories.csv`.
+3. **`is_valid_onet_title()` en `AuditWriter`** — última verificación antes de escribir
+   cualquier corrección en el Excel de salida.
 
-### Modo 1 — CLI interactivo (terminal)
+### Herramienta de evaluación
 
-```python
-# en cualquier agente
-agent.cli_app(stream=True)
-```
-
-Levantás una conversación en la terminal. Útil para testear un agente específico rápido,
-sin levantar nada extra.
-
----
-
-### Modo 2 — AgentOS + AGUI (UI web local)
-
-```python
-# playground.py — ya está en el scaffold
-agent_os.serve(app="playground:app", reload=True, port=9001)
-```
-
-Ejecutás `python playground.py` y abrís `http://localhost:9001`. Podés interactuar con el
-agente visualmente y ver tool calls, respuestas y métricas de tokens en tiempo real.
-
-Para conectar el dashboard externo:
-1. Entrás a `os.agno.com`
-2. Agregás una instancia nueva → seleccionás "Local"
-3. Ponés la URL `http://localhost:9001`
-4. Desde ahí ves estado de agentes, sesiones activas y logs
+Los tests en `tests/` son la capa de evaluación del proyecto:
+- `test_integration_golden_path.py` — pipeline completo sobre `golden_input.xlsx`, verifica
+  que no haya alucinaciones y que toda corrección sea un título O*NET válido.
+- `test_mapper.py` — verifica las decisiones de routing por banda de confianza.
+- Marcador `real_llm` para separar tests que hacen llamadas reales al LLM.
 
 ---
 
-### Modo 3 — debug_mode en el código
-
-```python
-agent = Agent(
-    model=model,
-    tools=[ExcelTools()],
-    debug_mode=True,   # imprime cada tool call y su resultado
-)
-```
-
-Con `debug_mode=True` el agente imprime en consola cada tool call, sus argumentos y su
-resultado. Útil para detectar alucinaciones o tool calls incorrectos durante el desarrollo.
-
----
-
-### Modo 4 — Evaluación automática (evaluation/)
-
-```python
-# evaluation/test_agent_accuracy.py
-evaluation = AccuracyEval(
-    db=db,
-    name="Normalization Test",
-    model=model,
-    input="prodctos, elctronica, ropas",
-    expected_output="products, electronics, clothing",
-    agent=normalization_agent,
-    num_iterations=3,
-)
-evaluation.run(print_results=True)
-```
-
-Corre el agente N veces sobre el mismo input y mide cuántas veces acertó. Los resultados
-quedan en la DB y se pueden consultar en `http://localhost:9001/eval-runs`.
-
----
-
-## 7. Cómo detectar alucinaciones
+## 6. Cómo detectar alucinaciones
 
 Una alucinación en este contexto es cuando el agente propone una corrección que no existe
-en la base de categorías válidas — inventó una respuesta.
+en `valid_categories.csv` — inventó una respuesta.
 
 La defensa tiene tres capas:
 
-1. **Validar el output del MapperAgent contra la DB** antes de escribir el Excel — el
-   `AuditWriter` verifica que cada corrección propuesta exista en la lista de categorías válidas.
-
-2. **`output_schema` con Pydantic** — fuerza al agente a devolver JSON estructurado y
+1. **`output_schema` con Pydantic** — fuerza al agente a devolver JSON estructurado y
    validado. Si el output no cumple el schema, Agno lo rechaza.
 
-3. **Evaluaciones con casos conocidos** — el dataset en `evaluation/` tiene los outputs
-   esperados. Si el agente empieza a inventar, los tests lo detectan antes de producción.
+2. **Validación en `MapperAgent`** — antes de aceptar la respuesta del LLM, verifica
+   con `is_valid_onet_title()` que el título propuesto exista en la lista.
+
+3. **Validación en `AuditWriter`** — segunda verificación antes de escribir en el Excel.
+   Si el `MapperAgent` pasó algo inválido, el `AuditWriter` lo rechaza antes del output.

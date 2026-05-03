@@ -2,146 +2,159 @@
 
 ## Patrón de diseño
 
-La estructura sigue el layout oficial de Agno, con dos extensiones propias:
-`infrastructure/` (configuración de servicios externos) y `evaluation/` (métricas del agente).
+La estructura sigue el layout de Agno con dos capas propias: `infrastructure/` (plomería técnica
+compartida entre agentes) y `domain/` (reglas de negocio puras sin dependencias de framework).
 
-Agno no impone capas como Clean Architecture — sus proyectos oficiales usan carpetas planas al root.
-Esto hace que el código mapee directamente a la documentación y a los ejemplos del framework.
+Agno no impone Clean Architecture — sus proyectos oficiales usan carpetas planas al root.
+Esto hace que el código mapee directamente a la documentación oficial y a los ejemplos del framework.
 
 ```
 ┌─────────────────────────────────────┐
-│           API / Interfaces          │  ← FastAPI, Chainlit
+│          UI / API                   │  ← Chainlit (app.py), AgentOS (agent_os.py)
 ├─────────────────────────────────────┤
-│           Workflows                 │  ← Orquestación con Step/Steps
+│          Workflows                  │  ← Orquestación: normalization_workflow.py
 ├─────────────────────────────────────┤
-│         Agents / Tools              │  ← Lógica de los agentes y Toolkits
+│          Agents                     │  ← 4 steps + helpers (pre_processor, translator)
 ├─────────────────────────────────────┤
-│         Infrastructure              │  ← LLM provider, Storage, Observability
+│          Domain                     │  ← Reglas de negocio (onet.py)
+├─────────────────────────────────────┤
+│          Infrastructure             │  ← LLM provider, pipeline contracts, step I/O
 └─────────────────────────────────────┘
 ```
 
 ---
 
-## Scaffold
+## Scaffold actual
 
 ```
 py-agno-ai-workflow/
 │
-├── agents/                          # Definiciones de agentes (Agno-nativo)
-│   ├── ingest_agent.py              # Lee Excel, extrae categorías únicas
-│   ├── validator_agent.py           # Compara contra DB de categorías válidas
-│   ├── mapper_agent.py              # Fuzzy match + LLM para proponer correcciones
-│   └── audit_writer.py             # Genera Excel corregido + audit trail
+├── agents/
+│   ├── ingest_agent.py           Step 1: lee Excel (openpyxl), extrae categorías únicas
+│   ├── validator_agent.py        Step 2: compara contra O*NET con rapidfuzz, detecta anomalías
+│   ├── mapper_agent.py           Step 3: rapidfuzz + LLM — corrige o escala a review queue
+│   ├── mapping_pipeline.py       Helpers de scoring: score(), routing_band() — usados por mapper
+│   ├── pre_processor.py          Normalización sin LLM: seniority, casing, ruido
+│   ├── translator_agent.py       Sub-agente de mapper: traduce/expande antes de re-scorear
+│   └── audit_writer_agent.py     Step 4: escribe Excel corregido + audit log + review queue
 │
-├── workflows/                       # Orquestación con Step/Steps (Agno-nativo)
-│   └── normalization_workflow.py   # Ingest → Validate → Map → Audit
+├── domain/
+│   └── onet.py                   is_valid_onet_title() — única fuente de verdad del negocio
 │
-├── infrastructure/                  # Config de servicios externos (extensión propia)
+├── infrastructure/
 │   ├── llm/
-│   │   └── provider.py             # Modelo según ENV: LMStudio local / Groq cloud
-│   ├── storage/
-│   │   └── sqlite.py               # Persistencia entre pasos del workflow
-│   └── observability/
-│       └── traces.py               # Agno built-in traces (os.agno.com)
+│   │   └── provider.py           get_model() — factory LLM; todos los agentes importan de acá
+│   └── pipeline/
+│       ├── contracts.py          CategoryValidation — contrato entre ValidatorAgent y MapperAgent
+│       ├── session.py            PipelineSession — typed wrapper del session_state de Agno
+│       └── step_io.py            ok(), fail(), deserialize() — I/O entre Steps del Workflow
 │
-├── evaluation/                      # Evaluación del agente (extensión propia)
-│   └── test_agent_accuracy.py      # Mide precision/hallucination_rate de las correcciones
-│
-├── pre_processor.py                 # Normalización sin LLM: casing, seniority, ruido
+├── workflows/
+│   ├── normalization_workflow.py load_valid_categories() — carga valid_categories.csv
+│   └── pipeline.py               PipelineError — error type del workflow
 │
 ├── data/
-│   ├── raw/
-│   │   └── related_ocuppations.xlsx  # Fuente original O*NET (US Dept. of Labor)
-│   └── valid_categories.csv          # 923 títulos canónicos, generado por scripts/
+│   ├── valid_categories.csv      923 títulos O*NET canónicos (generado por scripts/)
+│   └── raw/
+│       └── related_ocuppations.xlsx  Fuente original O*NET (US Dept. of Labor)
+│
+├── tests/
+│   ├── conftest.py               Fixtures compartidos: Excel fake, stub LLM
+│   ├── fixtures/
+│   │   └── golden_input.xlsx     4 filas estáticas que cubren los casos clave
+│   ├── domain/
+│   │   └── test_onet.py          Tests de is_valid_onet_title()
+│   ├── test_pre_processor.py     Tests de normalización de texto
+│   ├── test_validator.py         Tests de ValidatorAgent
+│   ├── test_mapper.py            Tests de MapperAgent por banda de confianza
+│   ├── test_mapping_pipeline.py  Tests de score() y routing_band()
+│   ├── test_translator.py        Tests de TranslatorAgent en aislamiento
+│   ├── test_column_detection.py  Tests de detección automática de columna en Excel
+│   ├── test_integration_pipeline.py   Pipeline end-to-end con 4 agentes
+│   ├── test_integration_golden_path.py  Pipeline sobre golden_input.xlsx estático
+│   ├── test_integration_seams.py  Serialización/deserialización entre Steps
+│   └── test_smoke.py             Imports sin errores de startup
 │
 ├── scripts/
-│   └── build_valid_categories.py    # Extrae títulos de O*NET → valid_categories.csv
+│   ├── build_valid_categories.py Genera valid_categories.csv desde el Excel O*NET
+│   ├── audit_collisions.py       Verifica colisiones fuzzy en la lista de categorías
+│   └── generate_test_files.py    Genera Excel de muestra para testing
 │
-├── api/                             # Capa de entrega: FastAPI
-│   └── routes.py
+├── docs/                         Documentación del proyecto
+├── tmp/                          Runtime: uploads y outputs (no es código, en .gitignore)
 │
-├── docs/                            # Documentación del proyecto
-│   ├── 01-agno-core-concepts.md
-│   ├── 02-project-structure.md     ← este archivo
-│   ├── 03-market-research.md
-│   ├── 04-agent-orchestration-and-project-design.md
-│   ├── 06-stack-and-dependencies.md
-│   ├── 07-implementation-and-validation-strategy.md
-│   └── 08-business-context-and-human-in-the-loop.md
-│
-├── Dockerfile                       # Imagen de la app para deploy
-├── compose.yml                      # Docker Compose: app + base de datos
-├── app.py                           # Entry point de Chainlit (UI)
-├── main.py                          # Entry point de FastAPI
-├── .env                             # API keys (NO commitear)
-├── .env.example                     # Template de variables
-├── pyproject.toml                   # Dependencias (equivalente a package.json)
-└── requirements.txt                 # Generado desde pyproject.toml para Docker
+├── app.py                        Entry point 1: Chainlit web UI
+├── agent_os.py                   Entry point 2: REST API via AgentOS
+├── pyproject.toml                Dependencias del proyecto (uv)
+└── .env.example                  Template de variables de entorno
 ```
 
 ---
 
-## Por qué esta estructura y no Clean Architecture
+## Por qué esta estructura
 
-Clean Architecture agrega capas (`domain/`, `application/`) que tienen sentido en sistemas grandes
-con múltiples equipos. Para un proyecto de agentes con Agno:
-
-- Los ejemplos oficiales del framework usan `agents/`, `workflows/` al root — seguirlos reduce fricción.
-- Menos indirección → más fácil seguir la documentación y debuggear.
-- `infrastructure/` alcanza para separar la config de servicios externos.
-
-Si el proyecto crece y necesita más separación, la migración es directa — las carpetas
-ya tienen responsabilidades claras.
-
-**Por qué no hay carpeta `teams/`:** el flujo es lineal y determinista (Ingest → Validate → Map → Audit).
-El patrón Team resuelve routing dinámico entre agentes, que aquí no agrega valor. Sin él, hay
-menos superficie para bugs y el audit trail es más simple de seguir.
+| Decisión | Razón |
+|----------|-------|
+| `agents/` al root | Los ejemplos oficiales de Agno usan este layout — reduce fricción al leer docs |
+| `domain/onet.py` separado | La función `is_valid_onet_title()` la llaman tanto `mapper_agent` como `audit_writer_agent`; centralizarla evita duplicación |
+| `infrastructure/pipeline/` | Plomería técnica que los 4 agentes necesitan — `PipelineSession`, `ok()`, `deserialize()` — sin repetirla en cada archivo |
+| Sin carpeta `teams/` | El flujo es lineal y determinista; Team resuelve routing dinámico, que acá no agrega valor |
+| Sin carpeta `evaluation/` | Los tests viven en `tests/`; no hay capa de evaluación separada en la implementación actual |
+| `translator_agent.py` en `agents/` | Es un sub-agente de `MapperAgent`, no un Step del pipeline; vive en `agents/` porque usa el mismo patrón de inyección que los demás |
 
 ---
 
-## Flujo de datos del sistema
+## Flujo de datos
 
 ```
-Input: Excel del usuario (con categorías potencialmente erróneas)
+Usuario sube Excel
     ↓
-normalization_workflow.py
-    ├── Step 1: IngestAgent      →  lee el Excel, extrae categorías únicas
-    ├── Step 2: ValidatorAgent   →  compara contra valid_categories.csv
-    ├── Step 3: MapperAgent      →  pre_processor → rapidfuzz → LLM (si necesario)
-    │                                 confidence ≥ 0.90  → corrección automática
-    │                                 confidence 0.70–0.89 → LLM evalúa equivalencia
-    │                                 confidence < 0.70  → human-in-the-loop
-    └── Step 4: AuditWriter      →  genera Excel corregido + audit trail
-                                         ↓
-                                   Output: Excel limpio + reporte de cambios
+app.py  →  lee valid_categories.csv  →  guarda Excel en tmp/uploads/
+    ↓
+[Step 1] IngestAgent
+    Lee el Excel con openpyxl
+    Extrae categorías únicas → IngestResult (JSON)
+    ↓
+[Step 2] ValidatorAgent
+    Compara cada categoría contra valid_categories.csv con rapidfuzz
+    Devuelve ValidatorResult con lista de anomalías (JSON)
+    ↓
+[Step 3] MapperAgent
+    Para cada anomalía:
+      pre_processor → normaliza texto
+      score() → rapidfuzz contra O*NET
+      ≥ 0.90  → auto-corrección directa
+      0.70–0.89 → LLM evalúa equivalencia semántica
+      < 0.70  → TranslatorAgent intenta normalizar, re-scorea
+                 si sigue < 0.70 → needs_review=True
+    Devuelve MappingResult (JSON)
+    ↓
+[Step 4] AuditWriter
+    Verifica cada corrección con is_valid_onet_title()
+    Escribe Excel con hoja "Corrected" + hoja "Review Queue"
+    Devuelve AuditResult con métricas
+    ↓
+app.py muestra resultado al usuario
 ```
-
-Cada paso produce un resultado tipado con Pydantic v2. Ningún agente escribe texto libre —
-toda la salida pasa por `output_schema` antes de llegar al siguiente paso.
 
 ---
 
 ## Cómo funciona `infrastructure/llm/provider.py`
 
-Este archivo es el único lugar donde se decide qué modelo usa el proyecto.
-Todos los agentes lo importan — ninguno sabe si el modelo es local o cloud:
+Es el único lugar donde se decide qué modelo usa el proyecto.
+Todos los agentes importan `get_model()` — ninguno instancia `LMStudio` o `Groq` directamente.
 
 ```python
 # infrastructure/llm/provider.py
-import os
-
-if os.getenv("ENV") == "production":
-    from agno.models.groq import Groq
-    model = Groq(id="llama-3.3-70b-versatile")
-else:
-    from agno.models.openai import OpenAILike
-    model = OpenAILike(id="llama-3.2-3b", base_url="http://localhost:1234/v1")
+def get_model():
+    provider = os.getenv("LLM_PROVIDER", "lmstudio").lower()
+    if provider == "groq":
+        return Groq(id=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+    return LMStudio(id=os.getenv("LMSTUDIO_MODEL", "qwen/qwen3.5-9b"))
 ```
 
-En `.env` local: `ENV=development` → LMStudio (sin costo, sin red).
-En Render/Railway: `ENV=production` → Groq cloud.
-
-Cambiar de proveedor no requiere tocar ningún agente — solo este archivo.
+En dev: `LLM_PROVIDER` no seteada → LMStudio local (sin costo, sin red).
+En producción: `LLM_PROVIDER=groq` → Groq cloud con llama-3.3-70b.
 
 ---
 

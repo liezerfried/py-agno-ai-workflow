@@ -2,26 +2,33 @@
 
 ## What the interface is
 
-Not a conversational chatbot. The Chainlit UI is a shell that handles **file upload → pipeline trigger → result download**. The user never types job categories manually — they upload the Excel file that already contains them.
+Not a conversational chatbot. The Chainlit UI is a file upload shell: the user uploads an
+Excel file, the pipeline runs, and the corrected file is available for download.
+The user never types job categories manually.
 
 ---
 
 ## End-to-end user flow
 
 ```
-User opens Chainlit in browser
+User opens http://localhost:8000
     ↓
-on_chat_start fires → Chainlit renders a file upload widget in the chat
+on_chat_start fires → AskFileMessage renders an upload widget in the chat
     ↓
-User clicks the upload button, picks the .xlsx file, hits Send
+User uploads the .xlsx file
     ↓
-on_message fires → code receives the file path
+app.py scans the column headers:
+    - Single column     → uses it automatically
+    - Multi-column, score ≥ 0.85 auto-detected  → uses best match
+    - Multi-column, low score  → AskActionMessage renders column buttons for user to pick
     ↓
-Workflow runs: IngestAgent → ValidatorAgent → MapperAgent → AuditWriter
+_run_pipeline_with_steps() runs each agent in a background thread (run_in_executor):
+    ▶ IngestAgent       "Found N unique categories (M total rows)"
+    ▶ ValidatorAgent    "X anomalies flagged — Y already valid"
+    ▶ MapperAgent       "N auto-corrected — M via LLM — P to review queue"
+    ▶ AuditWriter       "Corrected: N — Review queue: M — Precision: X%"
     ↓
-Chainlit streams each step as a visible message in the chat (collapsible)
-    ↓
-User downloads the corrected Excel with audit sheet
+Chainlit shows summary table + download link for corrected Excel
 ```
 
 ---
@@ -29,98 +36,95 @@ User downloads the corrected Excel with audit sheet
 ## What the user sees in the browser
 
 ```
-┌─────────────────────────────────────────┐
-│  Upload your Excel file with job cats   │
-│  [ Choose file... ]  [ Send ]           │
-├─────────────────────────────────────────┤
-│  ✓ File received.                       │
-│                                         │
-│  ▶ IngestAgent        [reading...]      │
-│  ▶ ValidatorAgent     [comparing...]    │
-│  ▶ MapperAgent        [fuzzy+LLM...]    │
-│  ▶ AuditWriter        [writing...]      │
-│                                         │
-│  Done. Download: [corrected.xlsx]       │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  Upload an Excel file (.xlsx) with job           │
+│  categories to normalize.                        │
+│  [ Choose file... ]  [ Send ]                   │
+├─────────────────────────────────────────────────┤
+│  Auto-detected job category column: "Job Title" │
+│                                                 │
+│  ▼ IngestAgent                                  │
+│    Found 47 unique categories (312 total rows)  │
+│  ▼ ValidatorAgent                               │
+│    12 anomalies flagged — 35 already valid      │
+│  ▼ MapperAgent                                  │
+│    8 auto-corrected — 3 via LLM — 1 to review  │
+│  ▼ AuditWriter                                  │
+│    Corrected: 11 — Review queue: 1 — Precision: 91.67% │
+│                                                 │
+│  Pipeline complete.                             │
+│  | Corrected      | 11  |                       │
+│  | Review queue   | 1   |                       │
+│  | Precision      | 91% |                       │
+│                                                 │
+│  [Download corrected file]                      │
+└─────────────────────────────────────────────────┘
 ```
 
-Each `cl.Step` renders as a collapsible step — the user can expand any step to see what the agent did. This is the main reason Chainlit was chosen over Streamlit or Gradio.
+Each `cl.Step` renders as a collapsible panel — the user can expand any step to see the
+detailed output. This is why Chainlit was chosen over Streamlit or Gradio.
 
 ---
 
-## How the upload widget works
-
-Chainlit's `AskFileMessage` renders a file picker + send button in the chat. No custom frontend needed.
+## How column detection works
 
 ```python
-files = await cl.AskFileMessage(
-    content="Upload your Excel file with job categories.",
-    accept={"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]},
-    max_size_mb=10,
-).send()
-```
+# app.py — on_chat_start
+scan = scan_headers(uploaded.path)   # reads only the header row
 
-The file lands on disk. Chainlit gives back the local path. That path is passed directly to `IngestAgent`.
+if len(scan.column_names) == 1:
+    target_column = scan.column_names[0]   # single column, no ambiguity
 
----
+elif detect_score >= 0.85:
+    target_column = best_col               # auto-detected with high confidence
 
-## How the pipeline connects
-
-`app.py` (entry point) sits at the project root. It imports and calls the Workflow:
-
-```
-app.py
-  └── on_chat_start  →  AskFileMessage (upload widget)
-  └── on_message     →  normalization_workflow.run(file_path)
-                              ├── IngestAgent
-                              ├── ValidatorAgent
-                              ├── MapperAgent
-                              └── AuditWriter
-                        → cl.File(corrected.xlsx) sent back to user
+else:
+    # Low confidence — show buttons and let the user pick
+    res = await cl.AskActionMessage(
+        content="Select the column that contains job categories:",
+        actions=[cl.Action(name="col", payload={"value": col}, label=col)
+                 for col in scan.column_names],
+    ).send()
+    target_column = res["payload"]["value"]
 ```
 
 ---
 
-## `app.py` structure (sketch)
+## How the pipeline connects to the UI
+
+Each executor is dispatched to a background thread via `run_in_executor` so the async
+event loop stays free between steps (allowing Chainlit to render UI updates).
 
 ```python
-import chainlit as cl
-from workflows.normalization_workflow import run_workflow
+# app.py — _run_pipeline_with_steps()
+executors = [
+    ("IngestAgent",    ingest_executor),
+    ("ValidatorAgent", validator_executor),
+    ("MapperAgent",    mapper_executor),
+    ("AuditWriter",    audit_executor),
+]
 
-@cl.on_chat_start
-async def start():
-    files = await cl.AskFileMessage(
-        content="Upload your Excel file with job categories.",
-        accept={"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]},
-        max_size_mb=10,
-    ).send()
+previous_content: str | None = None
 
-    cl.user_session.set("uploaded_file", files[0])
-    await cl.Message("File received. Type 'run' to start normalization.").send()
+for name, executor_fn in executors:
+    async with cl.Step(name=name) as step:
+        step.output = "Running…"
+        step_input = StepInput(previous_step_content=previous_content)
 
+        output = await loop.run_in_executor(
+            None, partial(executor_fn, step_input, session_state)
+        )
 
-@cl.on_message
-async def main(message: cl.Message):
-    uploaded = cl.user_session.get("uploaded_file")
+        if not output.success:
+            step.output = f"Failed: {output.content}"
+            raise PipelineError(name, output.content)
 
-    async with cl.Step(name="IngestAgent") as step:
-        step.output = "Reading Excel and extracting unique categories..."
-
-    async with cl.Step(name="ValidatorAgent") as step:
-        step.output = "Comparing against 923 O*NET titles..."
-
-    async with cl.Step(name="MapperAgent") as step:
-        step.output = "Running rapidfuzz + LLM on anomalies..."
-
-    async with cl.Step(name="AuditWriter") as step:
-        step.output = "Writing corrected Excel + audit log..."
-
-    output_path = "data/output_corrected.xlsx"
-    await cl.Message(
-        content="Done. Download your corrected file:",
-        elements=[cl.File(name="corrected.xlsx", path=output_path)]
-    ).send()
+        previous_content = output.content
+        step.output = _step_summary(name, previous_content)  # human-readable summary
 ```
+
+`_step_summary()` deserializes each agent's JSON output and returns a short status line
+specific to that agent (e.g. for `MapperAgent`: `"8 auto-corrected — 3 via LLM — 1 to review queue"`).
 
 ---
 
@@ -128,22 +132,25 @@ async def main(message: cl.Message):
 
 ```bash
 chainlit run app.py
+# → opens at http://localhost:8000
 ```
-
-Opens at `http://localhost:8000`.
 
 ---
 
 ## How to prove the system works
 
-### Stage 1 — manual demo
-Run `chainlit run app.py`. Upload `data/sample_input.xlsx`. Verify the downloaded Excel has correct O\*NET titles and the audit sheet records confidence + method per row.
+### Manual demo
 
-### Stage 2 — automated eval
+1. Run `chainlit run app.py`
+2. Upload `tests/fixtures/golden_input.xlsx` (or any Excel with job titles)
+3. Watch each agent step appear in real time
+4. Download the corrected Excel — verify it has the "Corrected" and "Review Queue" sheets
+5. Check that every value in "Corrected" is a valid O*NET title from `data/valid_categories.csv`
+
+### Automated tests
+
 ```bash
-pytest evaluation/
+uv run pytest tests/test_integration_golden_path.py
 ```
-Asserts `precision ≥ 0.85` and `hallucination_rate ≤ 0.05` against `data/golden_dataset.csv`.
 
-### Stage 3 — portfolio demo
-Screen-record the full flow: upload dirty Excel → agents run visibly step by step → download clean file. That 60-second video is the proof of concept for any technical interview or portfolio.
+Asserts: no hallucinations, both output sheets present, precision metrics within thresholds.

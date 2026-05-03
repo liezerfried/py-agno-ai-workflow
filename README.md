@@ -27,7 +27,7 @@ IngestAgent → ValidatorAgent → MapperAgent → AuditWriter
 |------|------|
 | **IngestAgent** | Read Excel with openpyxl; extract unique raw categories from the target column |
 | **ValidatorAgent** | Compare against `valid_categories.csv` (923 O\*NET titles); flag anomalies |
-| **MapperAgent** | Run rapidfuzz pre-filter, then LLM for ambiguous cases; output typed Pydantic result |
+| **MapperAgent** | Run `pre_processor` → rapidfuzz → `TranslatorAgent` (non-English/abbreviations) → LLM; output typed Pydantic result |
 | **AuditWriter** | Write corrected Excel + audit log sheet + review queue for unresolved cases |
 
 **rapidfuzz always runs before any LLM call** — obvious typos and casing variants are resolved with zero token cost.
@@ -76,7 +76,6 @@ IngestAgent → ValidatorAgent → MapperAgent → AuditWriter
 | LLM (prod) | Groq — `llama-3.3-70b-versatile` |
 | Fuzzy matching | rapidfuzz |
 | Data processing | Pandas, openpyxl |
-| Analytics | DuckDB |
 | Output validation | Pydantic v2 |
 | API layer | AgentOS (`agno.os.AgentOS`) wraps FastAPI |
 | OpenAI SDK | Required — Agno's `OpenAILike` / `LMStudio` depend on it |
@@ -105,26 +104,58 @@ from agno.models.groq import Groq  # llama-3.3-70b-versatile
 ```
 py-agno-ai-workflow/
 ├── agents/
-│   ├── ingest_agent.py
-│   ├── validator_agent.py
-│   ├── mapper_agent.py
-│   ├── audit_writer_agent.py
-│   └── pre_processor.py        # casing, seniority, noise — zero token cost
+│   ├── ingest_agent.py         # Step 1: reads Excel, extracts unique categories
+│   ├── validator_agent.py      # Step 2: flags categories not in O*NET
+│   ├── mapper_agent.py         # Step 3: rapidfuzz + LLM + review queue
+│   ├── mapping_pipeline.py     # score(), routing_band() — used by mapper
+│   ├── pre_processor.py        # casing, seniority, noise — zero token cost
+│   ├── translator_agent.py     # sub-agent of mapper: translates/expands before re-scoring
+│   └── audit_writer_agent.py   # Step 4: writes corrected Excel + audit log + review queue
+├── domain/
+│   └── onet.py                 # is_valid_onet_title() — hard invariant check
 ├── workflows/
-│   └── normalization_workflow.py
+│   ├── normalization_workflow.py
+│   └── pipeline.py             # PipelineError
 ├── infrastructure/
 │   └── llm/
 │       └── provider.py         # single place to swap dev ↔ prod model
+│   └── pipeline/
+│       ├── contracts.py        # shared Pydantic types between agents
+│       ├── session.py          # PipelineSession — typed session_state wrapper
+│       └── step_io.py          # ok(), fail(), deserialize()
 ├── data/
 │   ├── valid_categories.csv    # 923 O*NET canonical titles
 │   └── raw/                    # input Excel files
+├── tests/                      # full test suite (unit + integration + golden path)
 ├── scripts/
 │   └── build_valid_categories.py
+├── app.py                      # Chainlit web UI entry point
+├── agent_os.py                 # REST API entry point (AgentOS)
 └── docs/                       # architecture and design documentation
+```
+
+## Getting Started
+
+```bash
+# Install dependencies
+uv sync
+
+# Copy and configure environment variables
+cp .env.example .env   # set LLM_PROVIDER=groq + GROQ_API_KEY, or leave default for LM Studio
+
+# Start the web UI
+chainlit run app.py    # → http://localhost:8000
+
+# Or start the REST API
+uvicorn agent_os:app --reload
+
+# Run tests
+uv run pytest
+uv run pytest -m "not real_llm"   # skip tests requiring a live LLM
 ```
 
 ## Status
 
-**All 4 agents scaffolded** (`IngestAgent`, `ValidatorAgent`, `MapperAgent`, `AuditWriter`) and linear `Workflow` wired. Pre-processor normalization rules implemented and unit-tested.
+All 4 pipeline agents implemented and tested. Full test suite covering unit, integration, seams, and golden path. Column auto-detection and button fallback UI implemented.
 
-**Next milestone:** end-to-end integration test — upload Excel → corrected Excel + audit sheet output.
+See `docs/00-onboarding-guide.md` for a complete walkthrough of the codebase.

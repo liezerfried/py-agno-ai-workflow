@@ -145,13 +145,16 @@ Types 2–4: `pre_processor.py` runs before rapidfuzz — zero tokens, zero late
 
 | Area | Document |
 |------|----------|
-| Agno concepts, toolkits, `output_schema` | `docs/01-agno-core-concepts.md` |
-| Folder structure and layer diagram | `docs/02-project-structure.md` |
-| Agent design and orchestration decisions | `docs/04-agent-orchestration-and-project-design.md` |
-| Full stack + pyproject.toml | `docs/06-stack-and-dependencies.md` |
-| Detection layers, evaluation, golden dataset | `docs/07-implementation-and-validation-strategy.md` |
-| Human-in-the-loop flow and review queue | `docs/08-business-context-and-human-in-the-loop.md` |
-| Agno SDK full reference — Agent, Team, Workflow, AgentOS API | `docs/05-agno-sdk-reference.md` |
+| Full codebase onboarding — folder map, agents, tests, how to run | `docs/onboarding.md` |
+| Agno concepts, toolkits, `output_schema` | `docs/agno-core-concepts.md` |
+| Folder structure and layer diagram (current scaffold) | `docs/project-structure.md` |
+| Agent design, orchestration decisions, anti-hallucination layers | `docs/agent-orchestration.md` |
+| Agno SDK full reference — Agent, Team, Workflow, AgentOS API | `docs/agno-sdk-reference.md` |
+| Full stack + pyproject.toml (actual dependencies) | `docs/stack.md` |
+| Detection layers, normalization types, test strategy | `docs/implementation-strategy.md` |
+| Business context, human-in-the-loop, review queue | `docs/business-context.md` |
+| Chainlit UI flow, column detection, app.py structure | `docs/chainlit-ui.md` |
+| Agno framework summary (all modules) | `docs/agno-summary.md` |
 
 ---
 

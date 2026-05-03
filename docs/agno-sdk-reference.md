@@ -91,29 +91,32 @@ El sistema de Workflows tiene **tres capas**: `Step` → `Steps` → `Workflow`.
 - `name`, `description` — metadatos del workflow
 
 ```python
-from agno.workflow.step import Step
-from agno.workflow.steps import Steps
-from agno.workflow.workflow import Workflow
+# Imports correctos — usar el módulo raíz, no los sub-módulos
+from agno.workflow import Step, Steps, Workflow, StepInput, StepOutput
 from agno.db.sqlite import SqliteDb
 
-# Paso 1: definir steps individuales
-ingest_step   = Step(name="ingest",    agent=ingest_agent,    description="Extraer categorías únicas del Excel")
-validate_step = Step(name="validate",  agent=validator_agent, description="Comparar contra O*NET válidos")
-map_step      = Step(name="map",       agent=mapper_agent,    description="Proponer correcciones con rapidfuzz + LLM")
-audit_step    = Step(name="audit",     agent=audit_writer,    description="Escribir Excel corregido + audit log")
+# Patrón A — agent= (el agente se llama directamente)
+ingest_step   = Step(name="ingest",    agent=ingest_agent)
+validate_step = Step(name="validate",  agent=validator_agent)
 
-# Paso 2: agrupar en una secuencia
+# Patrón B — executor= (función Python que envuelve la lógica; este proyecto usa este patrón)
+# El executor recibe StepInput y devuelve StepOutput.
+# Permite testear la función en aislamiento sin instanciar el Workflow.
+def ingest_executor(step_input: StepInput, session_state: dict) -> StepOutput:
+    ...
+    return ok(result)   # helpers en infrastructure/pipeline/step_io.py
+
+ingest_step = Step(name="IngestAgent", executor=ingest_executor)
+
+# Agrupar en secuencia y crear el Workflow
 pipeline = Steps(
-    name="normalization_pipeline",
-    description="Pipeline completo de normalización de categorías O*NET",
+    name="normalization",
     steps=[ingest_step, validate_step, map_step, audit_step],
 )
 
-# Paso 3: crear el Workflow
 workflow = Workflow(
-    name="ONet Normalization Workflow",
+    name="Job Category Normalization",
     steps=[pipeline],
-    db=SqliteDb(session_table="workflow_session", db_file="tmp/workflow.db"),
 )
 ```
 
@@ -140,20 +143,16 @@ Parámetros clave:
 
 **Patrón estándar de wiring (producción):**
 ```python
-from agno.os import AgentOS
+from agno.os.app import AgentOS   # import correcto en Agno ≥1.0
 
 agent_os = AgentOS(
     id="onet-normalizer",
     description="Pipeline de normalización de categorías O*NET",
     workflows=[onet_workflow],
-    db=SqliteDb(db_file="tmp/app.db"),
 )
 
 # get_app() devuelve la FastAPI app lista para uvicorn
 app = agent_os.get_app()
-
-if __name__ == "__main__":
-    agent_os.serve(app="main:app", reload=True)
 ```
 
 ```bash

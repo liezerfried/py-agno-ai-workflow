@@ -341,68 +341,31 @@ de evaluación, nunca el agente:
 
 ## 6. Evaluación — dónde está codeada y qué mide
 
-Ubicación en el proyecto: `evaluation/test_agent_accuracy.py`
+Los tests viven en `tests/`. El golden path test corre el pipeline completo sobre
+`tests/fixtures/golden_input.xlsx` — un Excel estático con 4 filas deliberadas:
 
-### Tipo 1 — AccuracyEval de Agno (consistencia por tipo de error)
+| Fila | Input | Caso cubierto |
+|------|-------|---------------|
+| 1 | `"Software Developers"` | Ya es válido — no debe cambiar |
+| 2 | `"Lead Accountants and Auditors"` | Seniority strip → autocorrección por fuzzy |
+| 3 | `"Fronted Developer"` | Typo → banda LLM |
+| 4 | `"RRHH"` | Abreviatura → banda LLM |
 
-Corre el agente N veces sobre el mismo input y mide si responde igual cada vez.
-Si hay varianza, hay un problema de prompt o de temperatura.
+```bash
+# Correr todos los tests
+uv run pytest
 
-```python
-from agno.eval.accuracy import AccuracyEval
+# Correr solo los que no hacen llamadas reales al LLM
+uv run pytest -m "not real_llm"
 
-typo_eval = AccuracyEval(
-    name="typos_test",
-    model=model,
-    input="prodctos, elctrónica, fronted developer",
-    expected_output="productos, electrónica, Frontend Developer",
-    agent=normalization_agent,
-    num_iterations=5,
-)
-typo_eval.run(print_results=True)
+# Golden path test
+uv run pytest tests/test_integration_golden_path.py
 ```
 
-### Tipo 2 — Precision/Recall sobre el golden dataset
-
-Mide objetivamente cuántas correcciones acertó el agente sobre casos conocidos.
-
-```python
-import pandas as pd
-
-def run_evaluation(agent, golden_dataset_path: str) -> dict:
-    df = pd.read_csv(golden_dataset_path)
-    valid = pd.read_csv("data/valid_categories.csv")["category"].tolist()
-
-    correct = 0
-    hallucinations = 0
-
-    for _, row in df.iterrows():
-        result = agent.run(row["job_category_raw"]).content
-        if result.corrected == row["expected_output"]:
-            correct += 1
-        elif result.corrected not in valid:
-            hallucinations += 1  # el agente inventó una categoría que no existe
-
-    return {
-        "precision": correct / len(df),
-        "hallucination_rate": hallucinations / len(df),
-    }
-```
-
-### Tipo 3 — Test de regresión con pytest
-
-Cuando modificás el prompt o cambiás el modelo, pytest avisa si la calidad bajó.
-
-```python
-import pytest
-
-def test_precision_above_threshold():
-    metrics = run_evaluation(mapper_agent, "data/golden_dataset.csv")
-    assert metrics["precision"] >= 0.85, f"Precision cayó a {metrics['precision']}"
-    assert metrics["hallucination_rate"] <= 0.05, "Tasa de alucinación muy alta"
-```
-
-Corrés con: `pytest evaluation/`
+El golden path test verifica:
+- El Excel de salida tiene las dos hojas requeridas ("Corrected" + "Review Queue")
+- No hubo alucinaciones (ninguna corrección inventó un título fuera de `valid_categories.csv`)
+- La corrección de seniority strip fue aplicada automáticamente
 
 ### Las tres métricas que importan
 
@@ -414,7 +377,7 @@ Corrés con: `pytest evaluation/`
 
 ---
 
-## 7. Flujo completo del sistema — paso a paso
+## 7. Flujo completo del sistema — para referencia
 
 ```
 Input: Excel del usuario (con categorías potencialmente erróneas)
@@ -446,37 +409,3 @@ Output:
     - Audit trail completo de cada corrección
 ```
 
----
-
-## 8. Por qué este proyecto es relevante para AI Engineer roles
-
-El dominio laboral (job search, ATS, HR tech) es el caso de uso ideal porque:
-
-- Los ATS y job boards tienen exactamente este problema a escala masiva
-- Las variantes de títulos de trabajo son infinitas y no se pueden cubrir con reglas manuales
-- El audit trail es obligatorio en contextos enterprise (compliance, GDPR)
-
-### Stack de keywords para CV / ATS
-
-Términos que aparecen en ofertas de AI Engineer 2026 y que este proyecto cubre:
-
-```
-multi-agent systems · workflow orchestration · output schema · Pydantic
-RAG-adjacent retrieval · evaluation layer · precision/recall · FastAPI
-audit trail · human-in-the-loop · confidence scoring · data quality / ETL with LLM
-```
-
-### Rol recomendado al que apuntar
-
-Con Fullstack + AI Engineering el título correcto es **AI Application Engineer**
-o **AI Engineer (Full-Stack)**. Es el perfil más demandado en 2026 porque une
-capacidades que escasean juntas: construir el backend/frontend Y integrar LLMs.
-
-Puestos que activás con este stack:
-
-| Puesto | Keywords que te matchean |
-|--------|--------------------------|
-| AI Engineer | Python, LLM, agents, RAG, API |
-| ML Engineer (application) | FastAPI, model integration, inference |
-| Full-Stack AI Developer | React/Next + Python + LLM |
-| AI Solutions Engineer | deployment, FastAPI, Claude/OpenAI API |

@@ -26,9 +26,6 @@ This summary is based on Context7 extracts from the official Agno docs. It is or
 | Evaluations | https://github.com/agno-agi/docs/blob/main/evals/overview.mdx ; https://github.com/agno-agi/docs/blob/main/evals/accuracy/overview.mdx ; https://github.com/agno-agi/docs/blob/main/evals/agent-as-judge/overview.mdx |
 | Examples and Patterns | https://github.com/agno-agi/docs/blob/main/examples/introduction.mdx ; https://github.com/agno-agi/docs/blob/main/examples/reasoning/overview.mdx |
 
-## Project Notes
-- Agent Persona guidance: [docs/agent-persona.md](docs/agent-persona.md)
-
 ## 1) Agents (core building block)
 - Agents are a stateful control loop around a stateless model, using tools and instructions in a loop to reach a final response.
 - Start simple: model + tools + instructions; add memory, knowledge, storage, guardrails, and followups only as needed.
@@ -198,56 +195,3 @@ This summary is based on Context7 extracts from the official Agno docs. It is or
 - Select the interface channel (Slack/Telegram/WhatsApp/A2A/AG-UI) early to shape auth and event handling.
 - Add approvals/HITL for sensitive tool calls and external execution paths.
 
----
-
-# XML Prompt (Template)
-
-Use this XML prompt to regenerate or extend the summary from Agno docs:
-
-```xml
-<prompt>
-  <role>You are a senior AI engineer analyzing and enhancing an existing Agno documentation summary.</role>
-  <goal>Analyze the current summary, identify gaps or weak spots, and enhance it using only the provided Agno docs while preserving structure and tone.</goal>
-  <inputs>
-    <doc_sources>Context7 extracts from agno-agi/docs</doc_sources>
-    <scope>All modules including examples</scope>
-    <format>Markdown</format>
-    <current_summary>docs/agno-summary.md</current_summary>
-  </inputs>
-  <output_spec>
-    <sections>
-      <section>Agents</section>
-      <section>Teams</section>
-      <section>Workflows</section>
-      <section>Tools</section>
-      <section>Models</section>
-      <section>Reasoning</section>
-      <section>Memory</section>
-      <section>Knowledge</section>
-      <section>Sessions</section>
-      <section>Database and Storage</section>
-      <section>Tracing and Observability</section>
-      <section>AgentOS</section>
-      <section>Security (RBAC)</section>
-      <section>MCP</section>
-      <section>Evaluations</section>
-      <section>Examples and Patterns</section>
-      <section>Build Your Agent Blueprint</section>
-    </sections>
-    <style>
-      <bullet_style>short, action-oriented</bullet_style>
-      <tone>practical, production-focused</tone>
-      <length>3-5 pages</length>
-    </style>
-    <behavior>
-      <preserve_existing_structure>true</preserve_existing_structure>
-      <add_missing_points_only>true</add_missing_points_only>
-      <avoid_rewriting_when_complete>true</avoid_rewriting_when_complete>
-    </behavior>
-  </output_spec>
-  <constraints>
-    <no_hallucination>Only summarize what is in the provided docs.</no_hallucination>
-    <no_vendor_lockin>Prefer provider-agnostic guidance.</no_vendor_lockin>
-  </constraints>
-</prompt>
-```

@@ -48,79 +48,54 @@ query SQL no — los trata como categorías distintas o directamente no los encu
 
 ## 3. Flujo completo con intervención humana
 
+### Interfaz web (Chainlit — `app.py`)
+
 ```
-Usuario sube su Excel sucio
+Usuario abre http://localhost:8000
         ↓
-POST /normalize  (FastAPI recibe el archivo)
+on_chat_start → Chainlit muestra widget de file upload
         ↓
-Workflow corre sobre ese archivo:
+Usuario sube el Excel → on_message recibe la ruta del archivo
+        ↓
+Pipeline corre con visualización en tiempo real:
 
-    IngestAgent
-        Lee el Excel con openpyxl
-        Extrae las categorías únicas de la columna target
-        No modifica nada
-
-    ValidatorAgent
-        Compara cada categoría contra valid_categories.csv (O*NET, estático)
-        Identifica cuáles no existen en la lista válida → anomalías
-
-    MapperAgent
-        Para cada anomalía evalúa con rapidfuzz + LLM:
-
-        confidence ≥ 0.90  →  corrección automática
-                               se aplica directamente, sin intervención
-        confidence 0.70–0.89 →  corrección sugerida
-                               se aplica pero queda marcada "revisar"
-        confidence < 0.70  →  el agente NO corrige
-                               va a la cola de revisión humana
-
-    AuditWriter
-        Genera el Excel con las correcciones automáticas aplicadas
-        Genera el audit trail de cada cambio
-        Genera la review queue con los ítems que el agente no pudo resolver
+    ▶ IngestAgent       Lee el Excel, extrae categorías únicas
+    ▶ ValidatorAgent    Compara contra O*NET, detecta anomalías
+    ▶ MapperAgent       rapidfuzz + TranslatorAgent + LLM
+    ▶ AuditWriter       Escribe Excel corregido + audit log + review queue
 
         ↓
-Response al usuario:
-    - Excel corregido (correcciones automáticas ya aplicadas)
-    - Audit log (qué cambió, con qué confianza, qué método)
-    - Review queue (lista de ítems que esperan decisión humana)
+Chainlit muestra enlace de descarga: corrected_YYYYMMDD_HHMMSS.xlsx
+El Excel descargado tiene:
+    - Hoja "Corrected": categorías normalizadas
+    - Hoja "Review Queue": filas que el agente no pudo resolver (confidence < 0.70)
 ```
+
+### API REST (AgentOS — `agent_os.py`)
+
+AgentOS expone el workflow automáticamente como endpoints REST.
+Correr con: `uvicorn agent_os:app --reload`
+
+Los casos con `needs_review=True` quedan en la hoja "Review Queue" del Excel.
+La revisión humana se realiza sobre el Excel descargado — el usuario edita la hoja
+"Review Queue" y la procesa manualmente.
 
 ---
 
 ## 4. Cómo funciona la revisión humana
 
-Cuando el agente no está seguro, **pausa y espera** — no adivina.
-El humano recibe una lista de casos dudosos con la sugerencia del agente:
+Cuando el agente no está seguro (`confidence < 0.70`), **no adivina** — marca el row
+con `needs_review=True` y lo incluye en la hoja "Review Queue" del Excel de salida.
 
-```json
-// GET /review-queue
-[
-  {
-    "id": "item_042",
-    "original": "xyz developer pro",
-    "suggested": "Software Developers",
-    "confidence": 0.61,
-    "reason": "no fuzzy match claro, coincidencia semántica parcial"
-  },
-  {
-    "id": "item_087",
-    "original": "consultor RR.HH senior",
-    "suggested": "Human Resources Managers",
-    "confidence": 0.68,
-    "reason": "abreviatura con variante de puntuación"
-  }
-]
-```
+La hoja "Review Queue" contiene:
 
-El humano tiene dos acciones:
+| raw | closest_match | confidence | review_reason |
+|-----|---------------|------------|---------------|
+| xyz developer pro | Software Developers | 0.61 | no fuzzy match claro |
+| consultor RR.HH senior | Human Resources Managers | 0.68 | abreviatura con variante |
 
-```
-POST /review/{id}/approve   →  acepta la sugerencia del agente
-POST /review/{id}/reject    →  escribe la corrección correcta manualmente
-```
-
-Una vez que el humano procesa la cola, el Excel final queda completo.
+El humano revisa esta hoja, decide qué corrección aplicar, y puede volver a subir
+el archivo corregido si necesita reprocesarlo.
 
 ---
 
@@ -137,31 +112,9 @@ Este diseño escalonado es lo que hace al sistema seguro para producción:
 
 ---
 
-## 6. Endpoints de la API — mapa completo
-
-```
-POST /normalize
-    Input:  archivo .xlsx (multipart/form-data)
-    Output: Excel corregido + audit log + review queue
-
-GET /review-queue
-    Output: lista de ítems con confidence < 0.70 pendientes de revisión
-
-POST /review/{id}/approve
-    Input:  id del ítem
-    Output: corrección confirmada, ítem removido de la queue
-
-POST /review/{id}/reject
-    Input:  id del ítem + corrección manual del humano
-    Output: corrección aplicada, ítem removido de la queue
-
-GET /audit/{run_id}
-    Output: registro completo de una corrida — qué cambió, cómo, con qué confianza
-```
-
 ---
 
-## 7. Por qué la review queue diferencia el portfolio
+## 6. Por qué la review queue diferencia el portfolio
 
 La mayoría de proyectos de agentes en portfolio hacen todo automático o no hacen nada.
 Un sistema que **sabe cuándo no sabe** y pausa para pedir ayuda humana es la
