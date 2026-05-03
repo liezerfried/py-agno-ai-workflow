@@ -1,3 +1,10 @@
+"""
+Maps each anomalous job category to the closest canonical O*NET title.
+Routing: rapidfuzz score determines whether the match is accepted automatically
+(exact >= 0.90), sent to the LLM for semantic evaluation (0.70-0.89), or escalated
+to the human review queue (< 0.70). The LLM is never called when rapidfuzz alone
+is sufficient — this keeps token cost proportional to actual ambiguity.
+"""
 import logging
 from typing import Literal
 
@@ -6,7 +13,7 @@ from pydantic import BaseModel, model_validator
 from agno.agent import Agent
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
-from agents.mapping_pipeline import PipelineConfig, score, routing_band
+from agents.mapping_pipeline import FuzzyResult, PipelineConfig, score, routing_band
 from agents.translator_agent import translate, TranslationResult
 from agents.validator_agent import ValidatorResult
 from infrastructure.pipeline.contracts import CategoryValidation
@@ -47,6 +54,9 @@ class SemanticMatch(BaseModel):
     normalization_type: Literal["language", "synonym", "abbreviation", "unknown"]
 
 
+# Lazy singleton — the Agent instantiation triggers model loading, which is
+# expensive. Deferring it means import-time is fast and tests that inject a stub
+# via set_agent() never pay the cost of creating a real agent.
 _mapper_agent: Agent | None = None
 
 
@@ -69,10 +79,10 @@ def _get_agent() -> Agent:
                 "When is_equivalent=false: canonical_title MUST be null. Never invent a title outside the candidates list.",
                 # normalization_type guide with examples
                 "Set normalization_type based on WHY the raw title differs from its canonical form:",
-                "  language   → raw title is in a foreign language. Example: 'Desarrollador Backend' → 'Backend Web Developers'",
-                "  abbreviation → raw title uses an acronym or shorthand. Example: 'RRHH' → 'Human Resources Managers', 'QA' → 'Software Quality Assurance Analysts and Testers'",
-                "  synonym    → gender inflection, alternate wording, or job-title variant for the same role. Example: 'Desarrolladora Frontend' → 'Frontend Web Developers'",
-                "  unknown    → you cannot determine the reason with confidence.",
+                "  language   -> raw title is in a foreign language. Example: 'Desarrollador Backend' -> 'Backend Web Developers'",
+                "  abbreviation -> raw title uses an acronym or shorthand. Example: 'RRHH' -> 'Human Resources Managers', 'QA' -> 'Software Quality Assurance Analysts and Testers'",
+                "  synonym    -> gender inflection, alternate wording, or job-title variant for the same role. Example: 'Desarrolladora Frontend' -> 'Frontend Web Developers'",
+                "  unknown    -> you cannot determine the reason with confidence.",
                 # Hard guardrails
                 "NEVER hallucinate: if is_equivalent=true, canonical_title must be exactly one of the candidate strings provided in the prompt.",
                 "When in doubt, set is_equivalent=false. A false negative (missed correction) is always safer than a hallucination.",
@@ -87,63 +97,54 @@ def set_agent(agent: Agent | None) -> None:
     _mapper_agent = agent
 
 
+# Module-level config so thresholds and top-N candidates are shared across all
+# _decide() calls without being re-instantiated per row.
 _CONFIG = PipelineConfig()
 
 
-def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_categories_set: set[str]) -> MappingDecision:
-    fuzzy = score(anomaly.raw, valid_categories, _CONFIG)
-    band = routing_band(fuzzy.top_score, _CONFIG)
-    translation = TranslationResult(english_title=anomaly.raw, was_translated=False, normalization_type="unknown")
+def _needs_review(anomaly: CategoryValidation, fuzzy: FuzzyResult, reason: str) -> MappingDecision:
+    logger.info("needs_review: raw=%r reason=%s score=%.4f", anomaly.raw, reason, fuzzy.top_score)
+    return MappingDecision(
+        raw=anomaly.raw,
+        preprocessed=fuzzy.preprocessed,
+        corrected=None,
+        confidence=fuzzy.top_score,
+        method="needs_review",
+        normalization_type="unknown",
+        needs_review=True,
+        review_reason=reason,
+    )
 
-    def _review(review_reason: str) -> MappingDecision:
-        return MappingDecision(
-            raw=anomaly.raw,
-            preprocessed=fuzzy.preprocessed,
-            corrected=None,
-            confidence=fuzzy.top_score,
-            method="needs_review",
-            normalization_type="unknown",
-            needs_review=True,
-            review_reason=review_reason,
-        )
 
-    if fuzzy.top_match is None:
-        return _review("no_candidates")
+def _handle_exact(anomaly: CategoryValidation, fuzzy: FuzzyResult) -> MappingDecision:
+    logger.info("exact: raw=%r -> %r score=%.4f", anomaly.raw, fuzzy.top_match, fuzzy.top_score)
+    return MappingDecision(
+        raw=anomaly.raw,
+        preprocessed=fuzzy.preprocessed,
+        corrected=fuzzy.top_match,
+        confidence=fuzzy.top_score,
+        method="exact",
+        normalization_type="format",
+        needs_review=False,
+    )
 
-    if band == "review":
-        translation = translate(anomaly.raw)
-        if translation.was_translated:
-            fuzzy_t = score(translation.english_title, valid_categories, _CONFIG)
-            band_t = routing_band(fuzzy_t.top_score, _CONFIG)
-            if band_t != "review":
-                fuzzy = fuzzy_t
-                band = band_t
-        if band == "review":
-            return _review("low_confidence")
 
-    if band == "exact":
-        return MappingDecision(
-            raw=anomaly.raw,
-            preprocessed=fuzzy.preprocessed,
-            corrected=fuzzy.top_match,
-            confidence=fuzzy.top_score,
-            method="exact",
-            normalization_type="format",
-            needs_review=False,
-        )
+def _handle_fuzzy(anomaly: CategoryValidation, fuzzy: FuzzyResult, translation: TranslationResult) -> MappingDecision:
+    norm_type = translation.normalization_type if translation.was_translated else "typo"
+    logger.info("fuzzy: raw=%r -> %r score=%.4f norm_type=%s", anomaly.raw, fuzzy.top_match, fuzzy.top_score, norm_type)
+    return MappingDecision(
+        raw=anomaly.raw,
+        preprocessed=fuzzy.preprocessed,
+        corrected=fuzzy.top_match,
+        confidence=fuzzy.top_score,
+        method="fuzzy",
+        normalization_type=norm_type,
+        needs_review=False,
+    )
 
-    if band == "fuzzy":
-        return MappingDecision(
-            raw=anomaly.raw,
-            preprocessed=fuzzy.preprocessed,
-            corrected=fuzzy.top_match,
-            confidence=fuzzy.top_score,
-            method="fuzzy",
-            normalization_type=translation.normalization_type if translation.was_translated else "typo",
-            needs_review=False,
-        )
 
-    # band == "llm": call LLM with top candidates
+def _handle_llm(anomaly: CategoryValidation, fuzzy: FuzzyResult, valid_categories_set: set[str]) -> MappingDecision:
+    logger.info("llm: raw=%r score=%.4f candidates=%s", anomaly.raw, fuzzy.top_score, [t for t, _ in fuzzy.candidates])
     candidates_text = "\n".join(
         f"  {i+1}. {title} (score: {s:.2f})"
         for i, (title, s) in enumerate(fuzzy.candidates)
@@ -161,13 +162,18 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             raise TypeError(f"LLM returned unexpected content type: {type(run_result.content).__name__}")
         semantic: SemanticMatch = run_result.content
 
+        # Build a set of the exact strings the LLM was shown so we can verify its answer
+        # is one of them — not a rephrasing or an invented title.
         candidate_titles = {title for title, _ in fuzzy.candidates}
 
         if semantic.is_equivalent:
-            # LLM claims a match — canonical_title must be a valid O*NET title in our candidates
+            # Double guard: check both the global O*NET set and the candidates we sent.
+            # The LLM may return a valid O*NET title that was NOT in the prompt candidates
+            # (a hallucination that happens to exist in the DB); both checks are required.
             if not is_valid_onet_title(semantic.canonical_title, valid_categories_set) or semantic.canonical_title not in candidate_titles:
                 logger.warning("LLM hallucination for %r: returned %r", anomaly.raw, semantic.canonical_title)
-                return _review("llm_hallucination")
+                return _needs_review(anomaly, fuzzy, "llm_hallucination")
+            logger.info("llm accepted: raw=%r -> %r norm_type=%s", anomaly.raw, semantic.canonical_title, semantic.normalization_type)
             return MappingDecision(
                 raw=anomaly.raw,
                 preprocessed=fuzzy.preprocessed,
@@ -179,14 +185,64 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
             )
 
         # LLM said not equivalent — legitimate no-match, not a hallucination
-        return _review("llm_no_match")
+        return _needs_review(anomaly, fuzzy, "llm_no_match")
 
     except Exception as exc:
         logger.warning("LLM call failed for %r: %s", anomaly.raw, exc)
-        return _review("llm_error")
+        return _needs_review(anomaly, fuzzy, "llm_error")
+
+
+def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_categories_set: set[str]) -> MappingDecision:
+    """
+    Produce a MappingDecision for a single anomalous category.
+
+    Routing logic:
+      1. Run rapidfuzz to get a top score and candidate list.
+      2. If score >= 0.90 (exact band)  -> accept automatically, no LLM call.
+      3. If score 0.70-0.89 (fuzzy band) -> accept automatically (high-confidence fuzzy).
+      4. If score < 0.70 (review band)  -> try translation first; if that lifts the
+         score into a higher band, re-route. Otherwise escalate to human review.
+      5. If still in review band after translation -> needs_review=True, no correction written.
+      6. If routed to LLM -> call the agent; validate its output; accept or reject.
+    """
+    fuzzy = score(anomaly.raw, valid_categories, _CONFIG)
+    band = routing_band(fuzzy.top_score, _CONFIG)
+    translation = TranslationResult(english_title=anomaly.raw, was_translated=False, normalization_type="unknown")
+
+    if fuzzy.top_match is None:
+        return _needs_review(anomaly, fuzzy, "no_candidates")
+
+    if band == "review":
+        # Before giving up, try translating the raw title to English — a Spanish title
+        # that scores < 0.70 against O*NET (all English) may score much higher after
+        # translation (e.g. "Desarrollador Backend" -> "Backend Developer" -> 0.91).
+        translation = translate(anomaly.raw)
+        if translation.was_translated:
+            fuzzy_t = score(translation.english_title, valid_categories, _CONFIG)
+            band_t = routing_band(fuzzy_t.top_score, _CONFIG)
+            if band_t != "review":
+                # Translation lifted the score into a workable band — use the new results.
+                fuzzy = fuzzy_t
+                band = band_t
+        if band == "review":
+            return _needs_review(anomaly, fuzzy, "low_confidence")
+
+    if band == "exact":
+        return _handle_exact(anomaly, fuzzy)
+    if band == "fuzzy":
+        return _handle_fuzzy(anomaly, fuzzy, translation)
+    return _handle_llm(anomaly, fuzzy, valid_categories_set)
 
 
 def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
+    """
+    Agno Step executor: runs _decide() for every anomaly produced by ValidatorAgent.
+
+    Pipeline order: IngestAgent -> ValidatorAgent -> MapperAgent (this step) -> AuditWriter
+
+    Only the anomalies list is processed here — categories already validated as exact
+    O*NET titles are passed through unchanged by AuditWriter without touching this step.
+    """
     try:
         session = PipelineSession.from_dict(session_state)
         validator_result = deserialize(step_input.previous_step_content, ValidatorResult)

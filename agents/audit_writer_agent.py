@@ -4,14 +4,12 @@ Called by the Workflow as the last step, after MapperAgent has produced a Mappin
 Hard invariant: a correction is ONLY written if it is an exact O*NET title — any LLM
 hallucination is caught here and routed to the review queue instead.
 """
+import logging
 from datetime import datetime
 from pathlib import Path
 
 import openpyxl
 
-# Pydantic is a data-validation library. Defining a class that extends BaseModel
-# means every field is automatically type-checked when the object is created.
-# Pass a string where 'corrected_count' is expected and Pydantic will raise an error.
 from pydantic import BaseModel
 
 from agno.workflow import OnError, Step, StepInput, StepOutput
@@ -20,6 +18,8 @@ from agents.mapper_agent import MappingDecision, MappingResult
 from domain.onet import is_valid_onet_title
 from infrastructure.pipeline.session import PipelineSession
 from infrastructure.pipeline.step_io import deserialize, fail, ok
+
+logger = logging.getLogger(__name__)
 
 
 class AuditResult(BaseModel):
@@ -51,23 +51,6 @@ def _write_excel(
     returned a correction, it is verified here against valid_categories_set before
     being written. Any title that is not an exact O*NET canonical title is rejected
     and routed to the Review Queue instead.
-
-    O*NET (Occupational Information Network) is the US Department of Labor database
-    that provides 923 canonical job titles used as ground truth in this pipeline.
-    A canonical title is an exact string from data/valid_categories.csv — the system
-    never invents one; it only picks from that list.
-
-    Args:
-        source_path: Path to the original uploaded Excel file.
-        decisions_by_raw: Mapping from each raw (user-typed) category string to the
-            MappingDecision produced by MapperAgent. Categories that were already valid
-            O*NET titles are absent from this dict.
-        target_column: Name of the Excel column that holds the job category values.
-        valid_categories_set: The full set of 923 O*NET canonical titles, used for
-            the final hallucination check before writing.
-
-    Returns:
-        A 4-tuple of (output_path, corrected_count, review_queue_count, hallucination_count).
     """
     wb_in = openpyxl.load_workbook(source_path)
     ws_in = wb_in.active
@@ -140,26 +123,7 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
     """
     Agno Step executor that drives the full audit-and-write cycle.
 
-    In the Agno Workflow pattern, a Step is a named unit of work. The Workflow calls
-    each Step's executor in order, passing the previous step's output via
-    step_input.previous_step_content. The executor returns a StepOutput that the
-    next step will receive.
-
-    This executor:
-      1. Reconstructs the PipelineSession (file path, target column, valid titles).
-      2. Deserializes the MappingResult produced by MapperAgent.
-      3. Calls _write_excel to produce the corrected workbook.
-      4. Computes the precision metric and wraps everything in an AuditResult.
-
-    Args:
-        step_input: Agno-provided object containing the serialized MappingResult
-            from the previous step (MapperAgent).
-        session_state: Dictionary holding shared pipeline state (file path, target
-            column, canonical title list). Deserialized into a PipelineSession.
-
-    Returns:
-        A StepOutput wrapping a serialized AuditResult on success, or a failed
-        StepOutput (with stop=True) if an exception is raised.
+    Pipeline order: IngestAgent -> ValidatorAgent -> MapperAgent -> AuditWriter (this step)
     """
     try:
         session = PipelineSession.from_dict(session_state)
@@ -186,6 +150,14 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
             review_queue_count=review_queue_count,
             hallucination_count=hallucination_count,
             precision=precision,
+        )
+        logger.info(
+            "audit: corrected=%d review=%d hallucinations=%d precision=%s output=%r",
+            corrected_count,
+            review_queue_count,
+            hallucination_count,
+            f"{precision:.4f}" if precision is not None else "N/A",
+            output_path,
         )
         return ok(result)
     except Exception as e:

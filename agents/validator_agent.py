@@ -3,7 +3,9 @@ Checks each raw job category against the O*NET canonical title list to flag anom
 Called by the Workflow after IngestAgent; its output drives MapperAgent's workload.
 "Validation" here means: is this raw string already an exact O*NET title, or does it need correction?
 """
-# rapidfuzz measures how similar two strings are on a 0–100 scale.
+import logging
+
+# rapidfuzz measures how similar two strings are on a 0-100 scale.
 # Used here to find the closest O*NET title even when the raw value does not match exactly.
 from rapidfuzz import fuzz, process
 
@@ -22,6 +24,8 @@ from agents.ingest_agent import IngestResult
 from infrastructure.pipeline.contracts import CategoryValidation
 from infrastructure.pipeline.session import PipelineSession
 from infrastructure.pipeline.step_io import deserialize, fail, ok
+
+logger = logging.getLogger(__name__)
 
 
 class ValidatorResult(BaseModel):
@@ -51,14 +55,6 @@ def _validate_category(raw: str, valid_categories: list[str]) -> CategoryValidat
 
     This function does NOT correct the title — it only reports whether a correction is needed
     and provides the closest match as a hint for the confidence-band routing in MapperAgent.
-
-    Args:
-        raw: The original free-text job title as typed by the user (e.g. "Dev Front", "RRHH").
-        valid_categories: The full list of 923 O*NET canonical titles to validate against.
-
-    Returns:
-        A CategoryValidation with is_valid=True (no action needed) or is_valid=False
-        (correction required), plus the closest known O*NET title and its similarity score.
     """
     if raw in valid_categories:
         # Exact match — this raw value IS already a canonical O*NET title.
@@ -72,7 +68,7 @@ def _validate_category(raw: str, valid_categories: list[str]) -> CategoryValidat
         return CategoryValidation(raw=raw, is_valid=False, closest_match=None, similarity_score=0.0)
 
     closest, score, _ = match
-    # Normalize score from 0–100 (rapidfuzz) to 0.0–1.0 for consistency with pipeline thresholds.
+    # Normalize score from 0-100 (rapidfuzz) to 0.0-1.0 for consistency with pipeline thresholds.
     return CategoryValidation(
         raw=raw,
         is_valid=False,
@@ -85,23 +81,7 @@ def validator_executor(step_input: StepInput, session_state: dict) -> StepOutput
     """
     Agno Step executor: validates every unique raw category extracted by IngestAgent.
 
-    In the Agno Workflow pattern, a Step is a named unit of work executed in sequence.
-    The Workflow calls each executor automatically, passing the previous step's output
-    via step_input.previous_step_content. The executor returns a StepOutput that
-    the next Step will receive.
-
-    Pipeline order: IngestAgent → ValidatorAgent (this step) → MapperAgent → AuditWriter
-
-    Args:
-        step_input: Agno object whose .previous_step_content holds the serialized
-            IngestResult from IngestAgent (the list of unique raw categories).
-        session_state: Shared pipeline state dictionary holding the file path, target
-            column name, and the full O*NET canonical title list. Deserialized into
-            a PipelineSession.
-
-    Returns:
-        A StepOutput wrapping a serialized ValidatorResult on success, or a failed
-        StepOutput (with stop=True) if an unexpected exception is raised.
+    Pipeline order: IngestAgent -> ValidatorAgent (this step) -> MapperAgent -> AuditWriter
     """
     try:
         session = PipelineSession.from_dict(session_state)
@@ -117,6 +97,13 @@ def validator_executor(step_input: StepInput, session_state: dict) -> StepOutput
             valid_count=len(validations) - len(anomalies),
             anomaly_count=len(anomalies),
             anomalies=anomalies,
+        )
+        logger.info(
+            "validate: total=%d valid=%d anomalies=%d anomaly_rate=%.2f",
+            len(validations),
+            result.valid_count,
+            result.anomaly_count,
+            result.anomaly_count / len(validations) if validations else 0.0,
         )
         return ok(result)
     except Exception as e:
