@@ -6,7 +6,6 @@ This module never calls the LLM directly — it only measures string similarity 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Literal
 
 # rapidfuzz measures how similar two strings are on a 0–100 scale.
@@ -16,18 +15,6 @@ from typing import Literal
 from rapidfuzz import fuzz, process
 
 from agents.pre_processor import normalize_title
-
-
-class LLMFailureReason(str, Enum):
-    """
-    Explains why an LLM call did not produce a usable correction.
-
-    Each value corresponds to a distinct failure mode so callers can
-    handle them differently (e.g. log hallucinations separately from errors).
-    """
-    no_match = "no_match"           # LLM ran but said not equivalent or returned null canonical_title
-    hallucination = "hallucination" # LLM returned a title outside valid_categories_set or candidates
-    error = "error"                 # exception raised during LLM call
 
 
 # A frozen dataclass cannot be modified after creation — like a tuple with named fields.

@@ -28,6 +28,7 @@ from agents.validator_agent import validator_step
 # Create the tmp/ directory if it doesn't exist yet (used for the SQLite DB and output files).
 Path("tmp").mkdir(exist_ok=True)
 
+# Anchored to __file__ so the path is correct regardless of where uvicorn is launched from.
 _VALID_CATEGORIES_PATH = Path(__file__).parent / "data" / "valid_categories.csv"
 
 
@@ -79,10 +80,14 @@ agent_os = AgentOS(
     db=_db,
 )
 
-# app is the Asynchronous Server Gateway Interface (ASGI) application object. uvicorn (or any ASGI server) imports this
-# to start the HTTP server: `uvicorn agent_os:app --host localhost --port 8000`
+# get_app() returns the underlying FastAPI ASGI application.
+# Exposing it as `app` lets any ASGI server pick it up by name:
+#   uvicorn agent_os:app --host localhost --port 8000
 app = agent_os.get_app()
 
 if __name__ == "__main__":
-    # Running this file directly starts a local dev server with hot-reload enabled.
+    # Convenience shortcut for local development: `python agent_os.py` starts the server
+    # with hot-reload so code changes take effect without a manual restart.
+    # In production, invoke uvicorn directly instead — it gives finer control over
+    # workers, timeouts, and TLS without going through this __main__ block.
     agent_os.serve("agent_os:app", host="localhost", port=8000, reload=True)

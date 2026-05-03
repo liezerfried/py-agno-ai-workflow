@@ -80,7 +80,6 @@ def run_pipeline(
     else:
         assert inject_ingest is not None, "inject_ingest required when start_from != 'ingest'"
         ingest_result = inject_ingest
-        ingest_out_content = ingest_result.model_dump_json()
 
     ingest_content = ingest_result.model_dump_json()
 
