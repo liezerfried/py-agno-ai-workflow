@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"      # Chainlit UI available at http://localhost:8000
+    env_file:
+      - .env             # Copy .env.example → .env and fill in your keys before running
+    environment:
+      - LLM_PROVIDER=groq  # Override dev default (lmstudio) — Docker uses Groq
+    volumes:
+      - ./tmp:/app/tmp   # Persist output Excel files and SQLite DBs across container restarts

@@ -16,6 +16,7 @@ from agno.workflow import OnError, Step, StepInput, StepOutput
 
 from agents.mapper_agent import MappingDecision, MappingResult
 from domain.onet import is_valid_onet_title
+from infrastructure.pipeline.metrics_store import record_run
 from infrastructure.pipeline.session import PipelineSession
 from infrastructure.pipeline.step_io import deserialize, fail, ok
 
@@ -26,6 +27,7 @@ class AuditResult(BaseModel):
     """Summary statistics produced after writing the output Excel file."""
 
     output_path: str          # Absolute file path of the corrected Excel workbook.
+    total_rows: int           # Total number of data rows in the source file.
     corrected_count: int      # Number of rows where a correction was successfully applied.
     review_queue_count: int   # Number of rows sent to the human review queue (not auto-corrected).
     hallucination_count: int  # Number of LLM suggestions rejected for naming a non-existent O*NET title.
@@ -72,8 +74,10 @@ def _write_excel(
     corrected_count = 0
     review_queue_count = 0
     hallucination_count = 0
+    total_rows = 0
 
     for row in ws_in.iter_rows(min_row=2, values_only=True):
+        total_rows += 1
         raw_val = str(row[col_idx]).strip() if row[col_idx] is not None else None
         decision = decisions_by_raw.get(raw_val) if raw_val else None
 
@@ -116,7 +120,7 @@ def _write_excel(
     output_path = str(output_dir / f"{source_stem}_corrected_{timestamp}.xlsx")
     wb_out.save(output_path)
 
-    return output_path, corrected_count, review_queue_count, hallucination_count
+    return output_path, total_rows, corrected_count, review_queue_count, hallucination_count
 
 
 def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
@@ -132,7 +136,7 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
         # Build a lookup dict so each row in the Excel file can find its decision in O(1).
         decisions_by_raw = {d.raw: d for d in mapping_result.decisions}
 
-        output_path, corrected_count, review_queue_count, hallucination_count = _write_excel(
+        output_path, total_rows, corrected_count, review_queue_count, hallucination_count = _write_excel(
             source_path=session.file_path,
             decisions_by_raw=decisions_by_raw,
             target_column=session.target_column,
@@ -146,9 +150,19 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
 
         result = AuditResult(
             output_path=output_path,
+            total_rows=total_rows,
             corrected_count=corrected_count,
             review_queue_count=review_queue_count,
             hallucination_count=hallucination_count,
+            precision=precision,
+        )
+
+        record_run(
+            filename=Path(session.file_path).name,
+            total_rows=total_rows,
+            corrected=corrected_count,
+            review_queue=review_queue_count,
+            hallucinations=hallucination_count,
             precision=precision,
         )
         logger.info(

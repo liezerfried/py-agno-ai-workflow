@@ -35,6 +35,8 @@ class MappingDecision(BaseModel):
     needs_review: bool
     review_reason: str | None = None
 
+    # Pydantic model_validator enforces the invariant at construction time so no
+    # caller can accidentally build an inconsistent MappingDecision at runtime.
     @model_validator(mode="after")
     def _review_fields_consistent(self) -> "MappingDecision":
         if self.needs_review and self.review_reason is None:
@@ -48,6 +50,9 @@ class MappingResult(BaseModel):
     decisions: list[MappingDecision]
 
 
+# Separate from MappingDecision intentionally: this is the LLM's raw output schema.
+# Keeping it narrow limits what the model can say — it cannot return a confidence score
+# or a review reason, which are computed by the pipeline, not the LLM.
 class SemanticMatch(BaseModel):
     is_equivalent: bool
     canonical_title: str | None    # must be one of the top-3 candidates passed in prompt
@@ -93,6 +98,9 @@ def _get_agent() -> Agent:
 
 def set_agent(agent: Agent | None) -> None:
     """Override the agent instance. Used by tests to inject a stub without LM Studio."""
+    # Passing None resets the singleton so the real agent is rebuilt on the next LLM-band call.
+    # Tests that stay in the exact/fuzzy band never call this — only tests covering the LLM
+    # path need to inject a stub.
     global _mapper_agent
     _mapper_agent = agent
 
@@ -102,6 +110,8 @@ def set_agent(agent: Agent | None) -> None:
 _CONFIG = PipelineConfig()
 
 
+# Centralised helper so every escalation path logs at the same level with the same
+# fields — makes grepping the audit log for review cases reliable.
 def _needs_review(anomaly: CategoryValidation, fuzzy: FuzzyResult, reason: str) -> MappingDecision:
     logger.info("needs_review: raw=%r reason=%s score=%.4f", anomaly.raw, reason, fuzzy.top_score)
     return MappingDecision(
@@ -130,6 +140,9 @@ def _handle_exact(anomaly: CategoryValidation, fuzzy: FuzzyResult) -> MappingDec
 
 
 def _handle_fuzzy(anomaly: CategoryValidation, fuzzy: FuzzyResult, translation: TranslationResult) -> MappingDecision:
+    # If a translation was attempted upstream and it lifted the score into the fuzzy band,
+    # the normalization type comes from the translator. If no translation was needed,
+    # the mismatch is a typo/format issue resolved by rapidfuzz alone.
     norm_type = translation.normalization_type if translation.was_translated else "typo"
     logger.info("fuzzy: raw=%r -> %r score=%.4f norm_type=%s", anomaly.raw, fuzzy.top_match, fuzzy.top_score, norm_type)
     return MappingDecision(
@@ -244,7 +257,11 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
     O*NET titles are passed through unchanged by AuditWriter without touching this step.
     """
     try:
+        # session_state is the shared dict Agno passes between Steps; from_dict reconstructs
+        # the typed PipelineSession so we get the pre-loaded valid_categories list/set.
         session = PipelineSession.from_dict(session_state)
+        # previous_step_content is raw JSON from ValidatorAgent's StepOutput; deserialize
+        # parses it back into a typed ValidatorResult so _decide() receives structured data.
         validator_result = deserialize(step_input.previous_step_content, ValidatorResult)
 
         decisions = [
@@ -253,8 +270,12 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
         ]
 
         result = MappingResult(decisions=decisions)
+        # ok() serialises result to JSON and wraps it in a successful StepOutput so
+        # AuditWriter can deserialize it from step_input.previous_step_content.
         return ok(result)
     except Exception as e:
+        # fail() marks the StepOutput as failed; on_error=OnError.fail on the Step
+        # stops the workflow and surfaces the error to the caller.
         return fail(e)
 
 

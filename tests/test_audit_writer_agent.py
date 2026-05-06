@@ -109,10 +109,11 @@ class TestRowOutcomes:
     def test_already_valid_row_passed_through(self, tmp_path: Path) -> None:
         xl = make_excel(tmp_path / "in.xlsx", "job_title", ["Software Developers"])
         # No decision for "Software Developers" — it was already valid at validator step
-        output_path, corrected, review, hallucinations = _write_excel(
+        output_path, total_rows, corrected, review, hallucinations = _write_excel(
             str(xl), {}, "job_title", VALID_CATEGORIES_SET
         )
 
+        assert total_rows == 1
         assert corrected == 0
         assert review == 0
         assert hallucinations == 0
@@ -126,10 +127,11 @@ class TestRowOutcomes:
     def test_corrected_row_written_with_decision(self, tmp_path: Path) -> None:
         xl = make_excel(tmp_path / "in.xlsx", "job_title", ["Fronted Developer"])
         decisions = {"Fronted Developer": _corrected_decision("Fronted Developer", "Software Developers")}
-        output_path, corrected, review, hallucinations = _write_excel(
+        output_path, total_rows, corrected, review, hallucinations = _write_excel(
             str(xl), decisions, "job_title", VALID_CATEGORIES_SET
         )
 
+        assert total_rows == 1
         assert corrected == 1
         assert review == 0
         assert hallucinations == 0
@@ -141,10 +143,11 @@ class TestRowOutcomes:
     def test_needs_review_row_has_blank_correction(self, tmp_path: Path) -> None:
         xl = make_excel(tmp_path / "in.xlsx", "job_title", ["xyz999"])
         decisions = {"xyz999": _review_decision("xyz999")}
-        output_path, corrected, review, hallucinations = _write_excel(
+        output_path, total_rows, corrected, review, hallucinations = _write_excel(
             str(xl), decisions, "job_title", VALID_CATEGORIES_SET
         )
 
+        assert total_rows == 1
         assert corrected == 0
         assert review == 1
         assert hallucinations == 0
@@ -175,10 +178,11 @@ class TestRowOutcomes:
             normalization_type="unknown",
             needs_review=False,
         )
-        output_path, corrected, review, hallucinations = _write_excel(
+        output_path, total_rows, corrected, review, hallucinations = _write_excel(
             str(xl), {"RRHH": d}, "job_title", VALID_CATEGORIES_SET
         )
 
+        assert total_rows == 1
         assert hallucinations == 1
         assert corrected == 0
         assert review == 1
@@ -223,10 +227,11 @@ class TestMixedRows:
             "Fronted Developer": _corrected_decision("Fronted Developer", "Software Developers"),
             "xyz999": _review_decision("xyz999"),
         }
-        _, corrected, review, hallucinations = _write_excel(
+        _, total_rows, corrected, review, hallucinations = _write_excel(
             str(xl), decisions, "job_title", VALID_CATEGORIES_SET
         )
 
+        assert total_rows == 3
         assert corrected == 1
         assert review == 1
         assert hallucinations == 0

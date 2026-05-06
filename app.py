@@ -18,6 +18,7 @@ from agents.audit_writer_agent import AuditResult
 from agents.ingest_agent import IngestResult, detect_job_column, scan_headers
 from agents.mapper_agent import MappingResult
 from agents.validator_agent import ValidatorResult
+from infrastructure.pipeline.metrics_store import get_recent_runs
 from infrastructure.pipeline.session import PipelineSession
 from infrastructure.pipeline.step_io import deserialize
 from workflows.normalization_workflow import load_valid_categories
@@ -105,18 +106,48 @@ async def _run_pipeline_with_steps(file_path: str, target_column: str) -> AuditR
     return AuditResult.model_validate_json(previous_content)
 
 
+def _render_history() -> str:
+    """Build a markdown table of recent pipeline runs for the history view."""
+    runs = get_recent_runs(limit=20)
+    if not runs:
+        return "No previous runs — process your first file to see the history."
+
+    lines = [
+        "| Date | File | Rows | Corrected | Review | Precision |",
+        "|------|------|------|-----------|--------|-----------|",
+    ]
+    for r in runs:
+        timestamp = r["timestamp"][:16].replace("T", " ")  # "2026-05-05 14:32"
+        precision = f"{r['precision']:.1%}" if r["precision"] is not None else "N/A"
+        lines.append(
+            f"| {timestamp} | {r['filename']} | {r['total_rows']} "
+            f"| {r['corrected']} | {r['review_queue']} | {precision} |"
+        )
+    return "\n".join(lines)
+
+
 @cl.on_chat_start
 async def start() -> None:
     """
     Entry point for every new Chainlit chat session.
 
     Flow:
-      1. Prompt the user to upload an Excel file.
-      2. Scan its column headers.
-      3. Determine the target column automatically or ask the user to pick one.
-      4. Run the four-agent pipeline.
-      5. Display a summary table and a download link for the corrected file.
+      1. Ask the user whether to process a new file or view run history.
+      2. History path: render the pipeline_runs table and end the session.
+      3. Process path: prompt for file upload, detect column, run pipeline, show results.
     """
+    action = await cl.AskActionMessage(
+        content="What would you like to do?",
+        actions=[
+            cl.Action(name="process", payload={"value": "process"}, label="Process a new file"),
+            cl.Action(name="history", payload={"value": "history"}, label="View run history"),
+        ],
+    ).send()
+
+    if action is None or action.get("payload", {}).get("value") == "history":
+        await cl.Message(content=_render_history()).send()
+        return
+
     files = await cl.AskFileMessage(
         content="Upload an Excel file (.xlsx) with job categories to normalize.",
         accept={"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"]},

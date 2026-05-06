@@ -43,6 +43,13 @@ class HeaderScanResult(BaseModel):
 
 
 class IngestResult(BaseModel):
+    """
+    The output of extract_categories() — everything downstream steps need from the source file.
+
+    raw_categories is deduplicated so MapperAgent processes each unique title once,
+    not once per row. AuditWriter uses file_path + target_column to reopen the
+    original workbook and write corrections back to the right column.
+    """
     file_path: str
     target_column: str
     raw_categories: list[str]   # unique, sorted, stripped
@@ -51,6 +58,13 @@ class IngestResult(BaseModel):
 
 
 def scan_headers(file_path: str) -> HeaderScanResult:
+    """
+    Read only the first row of the workbook and return the column names.
+
+    This is intentionally a separate step from extract_categories so the UI can
+    present column choices to the user (or run detect_job_column) before committing
+    to a target column — avoiding a full file read if the user changes their mind.
+    """
     wb = openpyxl.load_workbook(file_path, read_only=True)
     ws = wb.active
     # Filter None to skip trailing empty columns that openpyxl returns when the
@@ -89,6 +103,14 @@ def detect_job_column(column_names: list[str]) -> tuple[str | None, float]:
 
 
 def extract_categories(file_path: str, target_column: str) -> IngestResult:
+    """
+    Read every data row and collect the unique, non-blank values in target_column.
+
+    Deduplication happens here (not in ValidatorAgent) so the LLM-path agents
+    process each distinct title exactly once regardless of how many rows contain it.
+    total_rows counts ALL data rows including blanks so AuditWriter can report
+    coverage accurately even when some rows had no value in the target column.
+    """
     # read_only=True uses openpyxl's optimised read path — avoids loading cell
     # styles and formula cache, which matters for large HR exports (>10k rows).
     wb = openpyxl.load_workbook(file_path, read_only=True)

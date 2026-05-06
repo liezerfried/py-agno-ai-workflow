@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.local
+tmp/
+data/raw/
+tests/fixtures/*_corrected_*.xlsx
+.git/
+.gitignore
+*.md
+docs/
