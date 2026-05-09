@@ -10,6 +10,26 @@ import os
 from agno.models.lmstudio import LMStudio
 from agno.models.groq import Groq
 
+# Default upper bound for a single LLM completion. Tuned from the 2026-05-08
+# diagnosis: LM Studio's qwen3.5-9b regularly takes 6–8s per call and was
+# observed at 12.4s for an outlier. 60s gives ample margin while still ensuring
+# a hung remote does not stall the pipeline indefinitely. _handle_llm() in
+# mapper_agent.py already absorbs the resulting TimeoutError into needs_review.
+_DEFAULT_TIMEOUT_SECONDS = 60
+
+
+def _resolve_timeout() -> int:
+    """Read LLM_TIMEOUT_SECONDS, falling back to the default on missing or invalid input."""
+    raw = os.getenv("LLM_TIMEOUT_SECONDS")
+    if raw is None:
+        return _DEFAULT_TIMEOUT_SECONDS
+    try:
+        return int(raw)
+    except ValueError:
+        # Misconfigured env should not abort startup — log-and-default is safer
+        # than crashing the whole AgentOS / Chainlit process at import time.
+        return _DEFAULT_TIMEOUT_SECONDS
+
 
 def get_model():
     """
@@ -35,10 +55,11 @@ def get_model():
     """
     # Default to LM Studio for local/dev unless LLM_PROVIDER overrides it.
     provider = os.getenv("LLM_PROVIDER", "lmstudio").lower()
+    timeout = _resolve_timeout()
 
     if provider == "groq":
         # Use Groq for prod; model name can be overridden via GROQ_MODEL.
-        return Groq(id=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
+        return Groq(id=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), timeout=timeout)
 
     # Fallback to LM Studio; model name can be overridden via LMSTUDIO_MODEL.
-    return LMStudio(id=os.getenv("LMSTUDIO_MODEL", "qwen/qwen3.5-9b"))
+    return LMStudio(id=os.getenv("LMSTUDIO_MODEL", "qwen/qwen3.5-9b"), timeout=timeout)

@@ -6,6 +6,7 @@ AgentOS wraps FastAPI internally; never instantiate FastAPI() directly in this p
 from pathlib import Path
 
 from agno.db.sqlite import SqliteDb
+from agno.tracing import setup_tracing
 
 # AgentOS is Agno's application server. It wraps FastAPI and exposes your Workflows
 # as REST endpoints automatically — no manual route definitions needed.
@@ -43,8 +44,15 @@ _workflow = Workflow(
     },
 )
 
-# SqliteDb persists workflow run history and session state between requests.
-_db = SqliteDb(db_file="tmp/agent_os.db")
+# Single SQLite DB shared by AgentOS (sessions + run history) and the OTEL tracer
+# (per-agent spans). Unifying both means runs triggered via REST appear in
+# os.agno.com with full step-level detail. The same path is used by app.py and
+# scripts/inspect_last_run.py so every entry point reads/writes the same store.
+_db = SqliteDb(db_file="tmp/agentos.db")
+
+# batch_processing=True flushes spans asynchronously so REST request handling is
+# never blocked by a SQLite write between agent steps.
+setup_tracing(db=_db, batch_processing=True)
 
 # AgentOS registers the workflow and wires up the REST API.
 # It does NOT start a server here — that happens via agent_os.serve() or an external uvicorn call.

@@ -6,7 +6,9 @@ to the human review queue (< 0.70). The LLM is never called when rapidfuzz alone
 is sufficient — this keeps token cost proportional to actual ambiguity.
 """
 import logging
-from typing import Literal
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -105,9 +107,64 @@ def set_agent(agent: Agent | None) -> None:
     _mapper_agent = agent
 
 
+# Per-anomaly progress callback. Decoupled from any UI so tests, CLI, and Chainlit
+# can each plug in their own observer. None means "no observer" — the executor
+# runs silently as before.
+ProgressCallback = Callable[[int, int], None]
+_progress_callback: ProgressCallback | None = None
+
+
+def set_progress_callback(callback: ProgressCallback | None) -> None:
+    """
+    Register an observer that receives (processed, total) updates while
+    mapper_executor is running. Pass None to clear.
+
+    The callback fires once with (0, total) before the first anomaly and
+    again with (i, total) after each anomaly is decided, so the UI can show
+    "starting", "in progress", and "done" states without polling.
+
+    Exceptions raised inside the callback are caught and logged so a buggy
+    observer cannot abort an in-flight pipeline run.
+    """
+    global _progress_callback
+    _progress_callback = callback
+
+
+def _emit_progress(processed: int, total: int) -> None:
+    cb = _progress_callback
+    if cb is None:
+        return
+    try:
+        cb(processed, total)
+    except Exception:
+        # Never let a misbehaving observer break the pipeline. Log at debug because
+        # callback errors are observer bugs, not pipeline bugs.
+        logger.debug("progress callback raised", exc_info=True)
+
+
 # Module-level config so thresholds and top-N candidates are shared across all
 # _decide() calls without being re-instantiated per row.
 _CONFIG = PipelineConfig()
+
+
+# Default worker count for parallel anomaly mapping. Tuned from the 2026-05-08
+# benchmark: 4 concurrent calls against LM Studio gave ~3.2x speedup (15.4s
+# serial → 4.8s parallel) without saturating the local model. Set
+# MAPPER_CONCURRENCY=1 to opt out (e.g. when rate-limited remote LLMs).
+_DEFAULT_CONCURRENCY = 4
+
+
+def _resolve_concurrency() -> int:
+    raw = os.getenv("MAPPER_CONCURRENCY")
+    if raw is None:
+        return _DEFAULT_CONCURRENCY
+    try:
+        n = int(raw)
+        # Negative or zero values are nonsensical for a worker count; clamp
+        # to serial rather than crash so a typo cannot abort startup.
+        return max(1, n)
+    except ValueError:
+        return _DEFAULT_CONCURRENCY
 
 
 # Centralised helper so every escalation path logs at the same level with the same
@@ -264,10 +321,41 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
         # parses it back into a typed ValidatorResult so _decide() receives structured data.
         validator_result = deserialize(step_input.previous_step_content, ValidatorResult)
 
-        decisions = [
-            _decide(anomaly, session.valid_categories, session.valid_categories_set)
-            for anomaly in validator_result.anomalies
-        ]
+        anomalies = validator_result.anomalies
+        total = len(anomalies)
+        # Announce the workload before any LLM call so a UI bound to the callback can
+        # show "0/N" the moment the step begins, not five seconds later when the first
+        # anomaly finishes — that delay was the entire reason the UI looked frozen.
+        _emit_progress(0, total)
+
+        concurrency = _resolve_concurrency()
+
+        if concurrency <= 1 or total <= 1:
+            # Serial fast path: avoids ThreadPoolExecutor overhead when the
+            # workload is trivially small or concurrency is explicitly disabled.
+            decisions: list[MappingDecision] = []
+            for i, anomaly in enumerate(anomalies, 1):
+                decisions.append(_decide(anomaly, session.valid_categories, session.valid_categories_set))
+                _emit_progress(i, total)
+        else:
+            # Parallel path: each anomaly is a self-contained _decide() call
+            # (LLM-bound, releases the GIL during HTTP I/O). Output ordering
+            # is restored by writing each completion to its original index so
+            # downstream code can rely on positional consistency.
+            decisions = [None] * total  # type: ignore[list-item]
+            with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="mapper") as ex:
+                future_to_index = {
+                    ex.submit(_decide, anomaly, session.valid_categories, session.valid_categories_set): i
+                    for i, anomaly in enumerate(anomalies)
+                }
+                completed = 0
+                for future in as_completed(future_to_index):
+                    idx = future_to_index[future]
+                    decisions[idx] = future.result()
+                    completed += 1
+                    # The callback fires from this main thread (as_completed
+                    # blocks here) so no extra locking is needed for the counter.
+                    _emit_progress(completed, total)
 
         result = MappingResult(decisions=decisions)
         # ok() serialises result to JSON and wraps it in a successful StepOutput so

@@ -7,7 +7,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-_DB_PATH = Path("tmp/traces.db")
+# Same SQLite file used by Agno's tracer and AgentOS — keeps pipeline_runs colocated
+# with agno_traces / agno_spans so a single DB has the full picture of each run.
+_DB_PATH = Path("tmp/agentos.db")
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS pipeline_runs (
