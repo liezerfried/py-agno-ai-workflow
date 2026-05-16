@@ -161,7 +161,7 @@ soporta concurrencia. Procedimos con paralelización.
 | Métrica | Serial (P0) | Paralelo (P1.2) | Speedup |
 |---------|-------------|------------------|---------|
 | Wall-clock harness | 340.9s | **160.7s** | **2.12×** |
-| Per-anomaly avg | 3.48s | 1.64s | 2.12× |
+| Per-anomaly avg | 3.48s | 1.64s  | 2.12× |
 
 ### Validación E2E final desde Chainlit (2026-05-09)
 

@@ -47,3 +47,43 @@ def test_invalid_timeout_value_falls_back_to_default(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("LLM_PROVIDER", "lmstudio")
     model = get_model()
     assert getattr(model, "timeout", None) == 60
+
+
+# ── Temperature (determinism) ─────────────────────────────────────────────────
+
+
+def test_default_temperature_is_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    temperature=0 is the default so two runs against the same input produce
+    the same mapping decision. Run-to-run variance was the largest residual
+    annoyance after the cuelgue fix; this knob removes it at the model layer.
+    """
+    monkeypatch.delenv("LLM_TEMPERATURE", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "lmstudio")
+    model = get_model()
+    assert getattr(model, "temperature", None) == 0
+
+
+def test_custom_temperature_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM_TEMPERATURE overrides the default for experimentation."""
+    monkeypatch.setenv("LLM_TEMPERATURE", "0.7")
+    monkeypatch.setenv("LLM_PROVIDER", "lmstudio")
+    model = get_model()
+    assert getattr(model, "temperature", None) == 0.7
+
+
+def test_groq_provider_also_receives_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both dev (LM Studio) and prod (Groq) get the same determinism guarantee."""
+    monkeypatch.setenv("LLM_TEMPERATURE", "0")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "stub-key-for-test")
+    model = get_model()
+    assert getattr(model, "temperature", None) == 0
+
+
+def test_invalid_temperature_falls_back_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-numeric LLM_TEMPERATURE does not abort the factory; default wins."""
+    monkeypatch.setenv("LLM_TEMPERATURE", "not-a-number")
+    monkeypatch.setenv("LLM_PROVIDER", "lmstudio")
+    model = get_model()
+    assert getattr(model, "temperature", None) == 0

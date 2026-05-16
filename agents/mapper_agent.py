@@ -13,6 +13,7 @@ from typing import Callable, Literal
 from pydantic import BaseModel, model_validator
 
 from agno.agent import Agent
+from agno.db.sqlite import SqliteDb
 from agno.workflow import OnError, Step, StepInput, StepOutput
 
 from agents.mapping_pipeline import FuzzyResult, PipelineConfig, score, routing_band
@@ -67,20 +68,34 @@ class SemanticMatch(BaseModel):
 _mapper_agent: Agent | None = None
 
 
+# Shared SqliteDb pointing at the same file the tracer and AgentOS use, so the
+# AgentSession this Agent creates lands in the same store as the workflow
+# session and the os.agno.com UI can stitch them together. Without db= the
+# Agent runs without a session record, and the UI shows the run as a sessionless
+# orphan trace.
+_AGENT_DB = SqliteDb(db_file="tmp/agentos.db")
+
+
 def _get_agent() -> Agent:
     global _mapper_agent
     if _mapper_agent is None:
         _mapper_agent = Agent(
             name="MapperAgent",
             model=get_model(),
+            db=_AGENT_DB,
             output_schema=SemanticMatch,
             instructions=[
                 # Role and context
                 "You are a job title normalization expert working with the O*NET occupational database (US Dept. of Labor).",
                 "Your task: decide if a raw job title is semantically equivalent to one of the provided O*NET canonical titles.",
                 # Core rule — is_equivalent
-                "Set is_equivalent=true ONLY when the raw title and a candidate describe the SAME professional role.",
-                "Set is_equivalent=false when: the role is different, too vague, or none of the candidates fit — even if the words look similar.",
+                "Set is_equivalent=true when the raw title and a candidate describe the SAME professional role, even if the candidate is more specific or uses more formal phrasing.",
+                "O*NET titles are intentionally verbose and may add specificity the raw title lacks. Treat the following as VALID matches:",
+                "  'Financial Analyst' -> 'Financial and Investment Analysts' (canonical adds 'Investment')",
+                "  'QA Analyst' -> 'Software Quality Assurance Analysts and Testers' (canonical expands acronym + scope)",
+                "  'Backend Developer' -> 'Software Developers' (canonical is broader job family)",
+                "  'CPA' -> 'Accountants and Auditors' (canonical groups related roles)",
+                "Set is_equivalent=false ONLY when the candidates describe a fundamentally different role (e.g. 'Dancers' for 'Financial Analyst'), or when the raw input is too vague to identify any profession.",
                 # Core rule — canonical_title
                 "When is_equivalent=true: copy one candidate verbatim into canonical_title. Do NOT rephrase, shorten, or translate.",
                 "When is_equivalent=false: canonical_title MUST be null. Never invent a title outside the candidates list.",
@@ -92,7 +107,7 @@ def _get_agent() -> Agent:
                 "  unknown    -> you cannot determine the reason with confidence.",
                 # Hard guardrails
                 "NEVER hallucinate: if is_equivalent=true, canonical_title must be exactly one of the candidate strings provided in the prompt.",
-                "When in doubt, set is_equivalent=false. A false negative (missed correction) is always safer than a hallucination.",
+                "Pick the closest plausible candidate rather than refusing — the pipeline already escalates obviously bad matches via a separate hallucination guard.",
             ],
         )
     return _mapper_agent
@@ -167,6 +182,49 @@ def _resolve_concurrency() -> int:
         return _DEFAULT_CONCURRENCY
 
 
+# Decision cache: skips re-deciding anomalies the mapper has already seen
+# within the same process. Two sources of duplicate raws this catches:
+#   - same anomaly appearing in two consecutive uploads of similar files
+#   - repeated runs of the same file (debugging, reprocessing)
+# Combined with temperature=0 in the model layer, cache hits return the exact
+# same decision the LLM would have produced — no semantic drift.
+#
+# No lock: a benign race where two workers compute the same key simultaneously
+# is fine. Both produce equivalent decisions (deterministic at temperature=0)
+# and the later write just overwrites the earlier one. dict[str] = value is
+# atomic in CPython, so we never observe a torn write.
+_decision_cache: dict[str, MappingDecision] = {}
+
+
+def clear_decision_cache() -> None:
+    """Drop every cached decision. Used by tests and by callers that need to
+    force a fresh evaluation (e.g. after changing the valid_categories list)."""
+    _decision_cache.clear()
+
+
+def _decide_cached(
+    anomaly: CategoryValidation,
+    valid_categories: list[str],
+    valid_categories_set: set[str],
+    session_id: str | None = None,
+) -> MappingDecision:
+    """Cache-aware wrapper around _decide(). The cache key is the raw input
+    exactly as the user typed it — preprocessing happens inside _decide and is
+    deterministic, so the raw is a sufficient key.
+
+    session_id is intentionally not part of the cache key: it is metadata for
+    tracing, not for the decision itself. Two runs with the same raw produce
+    the same MappingDecision regardless of which workflow session they belong
+    to. Forwarding it only affects cache misses, when we actually call the LLM.
+    """
+    cached = _decision_cache.get(anomaly.raw)
+    if cached is not None:
+        return cached
+    decision = _decide(anomaly, valid_categories, valid_categories_set, session_id=session_id)
+    _decision_cache[anomaly.raw] = decision
+    return decision
+
+
 # Centralised helper so every escalation path logs at the same level with the same
 # fields — makes grepping the audit log for review cases reliable.
 def _needs_review(anomaly: CategoryValidation, fuzzy: FuzzyResult, reason: str) -> MappingDecision:
@@ -213,7 +271,12 @@ def _handle_fuzzy(anomaly: CategoryValidation, fuzzy: FuzzyResult, translation: 
     )
 
 
-def _handle_llm(anomaly: CategoryValidation, fuzzy: FuzzyResult, valid_categories_set: set[str]) -> MappingDecision:
+def _handle_llm(
+    anomaly: CategoryValidation,
+    fuzzy: FuzzyResult,
+    valid_categories_set: set[str],
+    session_id: str | None = None,
+) -> MappingDecision:
     logger.info("llm: raw=%r score=%.4f candidates=%s", anomaly.raw, fuzzy.top_score, [t for t, _ in fuzzy.candidates])
     candidates_text = "\n".join(
         f"  {i+1}. {title} (score: {s:.2f})"
@@ -227,7 +290,12 @@ def _handle_llm(anomaly: CategoryValidation, fuzzy: FuzzyResult, valid_categorie
     )
 
     try:
-        run_result = _get_agent().run(prompt)
+        # session_id (optional) ties this MapperAgent.run() to the parent
+        # workflow session in the AgentOS UI. Without it, each agent.run()
+        # creates its own session and the UI shows N orphan sessions instead
+        # of one cohesive workflow session grouping every inner call.
+        run_kwargs = {"session_id": session_id} if session_id is not None else {}
+        run_result = _get_agent().run(prompt, **run_kwargs)
         if not isinstance(run_result.content, SemanticMatch):
             raise TypeError(f"LLM returned unexpected content type: {type(run_result.content).__name__}")
         semantic: SemanticMatch = run_result.content
@@ -262,7 +330,12 @@ def _handle_llm(anomaly: CategoryValidation, fuzzy: FuzzyResult, valid_categorie
         return _needs_review(anomaly, fuzzy, "llm_error")
 
 
-def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_categories_set: set[str]) -> MappingDecision:
+def _decide(
+    anomaly: CategoryValidation,
+    valid_categories: list[str],
+    valid_categories_set: set[str],
+    session_id: str | None = None,
+) -> MappingDecision:
     """
     Produce a MappingDecision for a single anomalous category.
 
@@ -274,6 +347,10 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
          score into a higher band, re-route. Otherwise escalate to human review.
       5. If still in review band after translation -> needs_review=True, no correction written.
       6. If routed to LLM -> call the agent; validate its output; accept or reject.
+
+    session_id (optional): forwarded to translate() and _handle_llm() so the
+    inner TranslatorAgent.run() / MapperAgent.run() calls join the parent
+    workflow session in the AgentOS UI instead of spawning orphan sessions.
     """
     fuzzy = score(anomaly.raw, valid_categories, _CONFIG)
     band = routing_band(fuzzy.top_score, _CONFIG)
@@ -286,8 +363,15 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
         # Before giving up, try translating the raw title to English — a Spanish title
         # that scores < 0.70 against O*NET (all English) may score much higher after
         # translation (e.g. "Desarrollador Backend" -> "Backend Developer" -> 0.91).
-        translation = translate(anomaly.raw)
-        if translation.was_translated:
+        translation = translate(anomaly.raw, session_id=session_id)
+        # Two reasons to retry the fuzzy with the translated form:
+        #   - was_translated=True: Spanish → English, the canonical case
+        #   - english_title != raw: the translator expanded an English abbreviation
+        #     (e.g. "Back-End Dev" -> "Backend Developer") and reports
+        #     was_translated=False because the input was already English. The 2026-05-09
+        #     audit found ~9 needs_review cases lost to this flag mismatch alone.
+        title_changed = translation.english_title.strip().lower() != anomaly.raw.strip().lower()
+        if translation.was_translated or title_changed:
             fuzzy_t = score(translation.english_title, valid_categories, _CONFIG)
             band_t = routing_band(fuzzy_t.top_score, _CONFIG)
             if band_t != "review":
@@ -301,7 +385,7 @@ def _decide(anomaly: CategoryValidation, valid_categories: list[str], valid_cate
         return _handle_exact(anomaly, fuzzy)
     if band == "fuzzy":
         return _handle_fuzzy(anomaly, fuzzy, translation)
-    return _handle_llm(anomaly, fuzzy, valid_categories_set)
+    return _handle_llm(anomaly, fuzzy, valid_categories_set, session_id=session_id)
 
 
 def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
@@ -321,6 +405,12 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
         # parses it back into a typed ValidatorResult so _decide() receives structured data.
         validator_result = deserialize(step_input.previous_step_content, ValidatorResult)
 
+        # Optional: workflow_session_id is injected by agent_os.py so every
+        # inner TranslatorAgent.run / MapperAgent.run call attaches to the
+        # parent workflow session in the AgentOS UI. Absent (e.g. Chainlit
+        # path) means each agent run gets its own session.
+        workflow_session_id = session_state.get("workflow_session_id")
+
         anomalies = validator_result.anomalies
         total = len(anomalies)
         # Announce the workload before any LLM call so a UI bound to the callback can
@@ -335,7 +425,10 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
             # workload is trivially small or concurrency is explicitly disabled.
             decisions: list[MappingDecision] = []
             for i, anomaly in enumerate(anomalies, 1):
-                decisions.append(_decide(anomaly, session.valid_categories, session.valid_categories_set))
+                decisions.append(_decide_cached(
+                    anomaly, session.valid_categories, session.valid_categories_set,
+                    session_id=workflow_session_id,
+                ))
                 _emit_progress(i, total)
         else:
             # Parallel path: each anomaly is a self-contained _decide() call
@@ -345,7 +438,13 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
             decisions = [None] * total  # type: ignore[list-item]
             with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="mapper") as ex:
                 future_to_index = {
-                    ex.submit(_decide, anomaly, session.valid_categories, session.valid_categories_set): i
+                    ex.submit(
+                        _decide_cached,
+                        anomaly,
+                        session.valid_categories,
+                        session.valid_categories_set,
+                        workflow_session_id,
+                    ): i
                     for i, anomaly in enumerate(anomalies)
                 }
                 completed = 0
@@ -367,4 +466,9 @@ def mapper_executor(step_input: StepInput, session_state: dict) -> StepOutput:
         return fail(e)
 
 
-mapper_step = Step(name="map", executor=mapper_executor, on_error=OnError.fail)
+mapper_step = Step(
+    name="map",
+    description="Decide a corrected O*NET title for every anomaly via rapidfuzz pre-filter and conditional LLM routing (exact / fuzzy / llm / needs_review bands), parallelised across MAPPER_CONCURRENCY workers.",
+    executor=mapper_executor,
+    on_error=OnError.fail,
+)

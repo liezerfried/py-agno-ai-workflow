@@ -69,6 +69,24 @@ VALID_CATEGORIES_SET: set[str] = set(VALID_CATEGORIES)
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _reset_module_caches() -> Iterator[None]:
+    """
+    Clear the translator and mapper module-level caches before each test.
+    Without this, a test that caches a decision or translation for a given
+    raw value leaks into later tests that stub a different response for the
+    same raw — silently masking real assertions.
+    """
+    from agents.mapper_agent import clear_decision_cache
+    from agents.translator_agent import clear_translation_cache
+
+    clear_decision_cache()
+    clear_translation_cache()
+    yield
+    clear_decision_cache()
+    clear_translation_cache()
+
+
 @pytest.fixture()
 def valid_cats() -> tuple[list[str], set[str]]:
     """Return the test vocabulary as (list, set) matching session_state layout."""

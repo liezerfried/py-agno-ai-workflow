@@ -163,4 +163,12 @@ def ingest_executor(_step_input: StepInput, session_state: dict) -> StepOutput:
 
 # on_error=fail halts the entire Workflow immediately; there is no meaningful
 # recovery if the source file is unreadable or the target column is missing.
-ingest_step = Step(name="ingest", executor=ingest_executor, on_error=OnError.fail)
+# The description surfaces in os.agno.com under the step's metadata panel,
+# giving anyone inspecting a run a one-line summary of what each stage does
+# without having to read the source.
+ingest_step = Step(
+    name="ingest",
+    description="Read the uploaded Excel and extract the deduplicated list of unique job categories from the target column.",
+    executor=ingest_executor,
+    on_error=OnError.fail,
+)

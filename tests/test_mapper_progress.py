@@ -183,7 +183,7 @@ def test_anomalies_actually_run_in_parallel(monkeypatch) -> None:
 
     sleep_per_call = 0.4
 
-    def slow_decide(anomaly: CategoryValidation, valid_categories, valid_set) -> MappingDecision:
+    def slow_decide(anomaly: CategoryValidation, valid_categories, valid_set, **kwargs) -> MappingDecision:
         time.sleep(sleep_per_call)
         return MappingDecision(
             raw=anomaly.raw,

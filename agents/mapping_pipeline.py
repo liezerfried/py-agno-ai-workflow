@@ -5,7 +5,7 @@ This module never calls the LLM directly — it only measures string similarity 
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 # rapidfuzz measures how similar two strings are on a 0–100 scale.

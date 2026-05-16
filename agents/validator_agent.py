@@ -113,4 +113,9 @@ def validator_executor(step_input: StepInput, session_state: dict) -> StepOutput
 # Register the executor as a named Agno Step.
 # on_error=OnError.fail stops the entire Workflow if validation fails —
 # running MapperAgent on unvalidated input would produce unreliable results.
-validator_step = Step(name="validate", executor=validator_executor, on_error=OnError.fail)
+validator_step = Step(
+    name="validate",
+    description="Classify each raw category as valid (exact O*NET match) or anomalous, attaching the closest match and similarity score for downstream routing.",
+    executor=validator_executor,
+    on_error=OnError.fail,
+)

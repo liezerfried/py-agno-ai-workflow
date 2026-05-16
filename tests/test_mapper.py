@@ -225,6 +225,56 @@ def test_translation_failure_goes_to_review() -> None:
     assert decision.review_reason == "low_confidence"
 
 
+def test_translator_expands_abbreviation_even_when_not_flagged_translated() -> None:
+    """
+    Audit (2026-05-09) found 9 needs_review cases where the translator
+    returned a useful expanded title (e.g. 'Backend Developer' for 'Back-End
+    Dev') but set was_translated=False because the input was already English.
+    The pipeline was discarding that expansion. The fix: re-fuzzy whenever the
+    title actually changed, regardless of the was_translated flag.
+    """
+    semantic = SemanticMatch(
+        is_equivalent=True,
+        canonical_title="Backend Developers",
+        normalization_type="abbreviation",
+    )
+    mock_mapper_run = MagicMock()
+    mock_mapper_run.content = semantic
+
+    # Translator returns the expanded form but with was_translated=False
+    # because the input was already English. The pipeline should still
+    # exploit the expansion.
+    set_translator_agent(_make_translator_stub("Backend Developer", False, "abbreviation"))
+
+    extract_side_effects = [
+        [("Backend Developers", 50, 0)],   # original 'Back-End Dev' → review band
+        [("Backend Developers", 78, 0)],   # translated 'Backend Developer' → llm band
+    ]
+    with patch("agents.mapping_pipeline.process.extract", side_effect=extract_side_effects):
+        with patch("agents.mapper_agent._mapper_agent") as mock_mapper_agent:
+            mock_mapper_agent.run.return_value = mock_mapper_run
+            decision = _decide(_anomaly("Back-End Dev"), VALID + ["Backend Developers"], VALID_SET | {"Backend Developers"})
+
+    assert decision.method == "llm"
+    assert decision.corrected == "Backend Developers"
+    assert decision.needs_review is False
+
+
+def test_translator_unchanged_title_still_goes_to_review() -> None:
+    """
+    Guard the inverse: when the translator returns the *same* string and
+    was_translated=False (no useful change), we must NOT loop or pretend
+    progress. The case must still escalate to needs_review.
+    """
+    set_translator_agent(_make_translator_stub("xyz unknown", False))
+
+    with patch("agents.mapping_pipeline.process.extract", return_value=[("Software Engineers", 40, 0)]):
+        decision = _decide(_anomaly("xyz unknown"), VALID, VALID_SET)
+
+    assert decision.needs_review is True
+    assert decision.review_reason == "low_confidence"
+
+
 def test_translated_but_still_low_score_goes_to_review() -> None:
     set_translator_agent(_make_translator_stub("certified public accountant", True, "abbreviation"))
 

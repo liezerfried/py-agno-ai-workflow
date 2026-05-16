@@ -181,4 +181,9 @@ def audit_executor(step_input: StepInput, session_state: dict) -> StepOutput:
 # Register this executor as a named Agno Step.
 # on_error=OnError.fail stops the entire Workflow if this step raises —
 # an incomplete audit must never be silently swallowed.
-audit_step = Step(name="audit", executor=audit_executor, on_error=OnError.fail)
+audit_step = Step(
+    name="audit",
+    description="Write the corrected Excel workbook (Corrected + Review Queue sheets), enforce the hallucination guard against valid_categories_set, and persist run metrics to pipeline_runs.",
+    executor=audit_executor,
+    on_error=OnError.fail,
+)

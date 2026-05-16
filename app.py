@@ -6,6 +6,7 @@ and each has its own cl.Step so the user sees per-agent progress in real time.
 """
 import asyncio
 import contextvars
+import sys
 import time
 from functools import partial
 from pathlib import Path
@@ -36,6 +37,54 @@ Path("tmp").mkdir(exist_ok=True)
 # with agent_os.py and scripts/inspect_last_run.py so every entry point
 # (Chainlit UI, REST API, inspection CLI) reads from the same SQLite file.
 setup_tracing(db=SqliteDb(db_file="tmp/agentos.db"), batch_processing=True)
+
+
+def _should_silence_connection_reset(context: dict) -> bool:
+    """
+    Decide whether an asyncio loop-exception context describes the kind of
+    ProactorEventLoop noise that should be silenced on Windows.
+
+    Two signatures count:
+      - the `exception` field is a ConnectionResetError instance
+      - the `message` field mentions WinError 10054 or _call_connection_lost
+
+    Anything else returns False so the default exception handler keeps
+    surfacing it — we never want this filter to become a global mute.
+    """
+    exc = context.get("exception")
+    if isinstance(exc, ConnectionResetError):
+        return True
+    message = str(context.get("message", ""))
+    if "WinError 10054" in message:
+        return True
+    if "_call_connection_lost" in message:
+        return True
+    return False
+
+
+def _install_connection_reset_filter(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """
+    Install a Windows-only exception handler on the active event loop that
+    silently drops ConnectionResetError noise from the ProactorEventLoop,
+    while still routing every other exception through asyncio's default
+    handler.
+
+    Background: Chainlit on Windows sees a noisy traceback every time the
+    browser closes a websocket (refresh, tab close, navigate-away). The
+    underlying error is benign transport teardown, not a bug; muting it
+    selectively keeps the log readable so genuine errors stand out.
+    """
+    if sys.platform != "win32":
+        return
+    if loop is None:
+        loop = asyncio.get_event_loop()
+
+    def _handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        if _should_silence_connection_reset(context):
+            return
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
 
 
 def _step_summary(name: str, content: str) -> str:
@@ -94,6 +143,10 @@ async def _run_pipeline_with_steps(file_path: str, target_column: str) -> AuditR
         valid_categories=load_valid_categories(),
     ).to_dict()
 
+    # Capture the running Chainlit event loop here so we can (a) dispatch each
+    # blocking step into a worker thread via run_in_executor and (b) hand the
+    # same loop reference to the mapper progress callback, which fires from a
+    # worker thread and needs call_soon_threadsafe to hop back onto the UI loop.
     loop = asyncio.get_event_loop()
     previous_content: str | None = None
 
@@ -115,6 +168,10 @@ async def _run_pipeline_with_steps(file_path: str, target_column: str) -> AuditR
             step_input = StepInput(previous_step_content=previous_content)
 
             try:
+                # step.executor is synchronous (Pandas / openpyxl / blocking LLM
+                # calls). Running it directly on the event loop would freeze the
+                # Chainlit UI for the duration of the step — including the
+                # mapper, which can take minutes. None = default ThreadPoolExecutor.
                 output = await loop.run_in_executor(
                     None, partial(step.executor, step_input, session_state)
                 )
@@ -255,10 +312,17 @@ async def start() -> None:
     Entry point for every new Chainlit chat session.
 
     Flow:
-      1. Ask the user whether to process a new file or view run history.
-      2. History path: render the pipeline_runs table and end the session.
-      3. Process path: prompt for file upload, detect column, run pipeline, show results.
+      1. Install the Windows-only ConnectionResetError filter so transport
+         noise from the ProactorEventLoop does not flood the logs.
+      2. Ask the user whether to process a new file or view run history.
+      3. History path: render the pipeline_runs table and end the session.
+      4. Process path: prompt for file upload, detect column, run pipeline, show results.
     """
+    # No-op on non-Windows; on Windows it silences ConnectionResetError /
+    # WinError 10054 from the default asyncio handler without masking other
+    # exceptions. Installing per-session ensures the running loop is set up.
+    _install_connection_reset_filter()
+
     action = await cl.AskActionMessage(
         content="What would you like to do?",
         actions=[
